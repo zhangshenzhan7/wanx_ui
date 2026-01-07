@@ -1,0 +1,2445 @@
+{% extends "base.html" %}
+
+{% block title %}通义万相 - 资产库{% endblock %}
+
+{% block body %}
+<div class="workspace-container">
+    <div class="workspace-header">
+        <h1>📁 资产库</h1>
+        <div>
+            <button class="btn btn-secondary active" style="margin-right: 10px;">📁 资产库</button>
+            <button class="btn btn-secondary" onclick="window.location.href='/workspace'" style="margin-right: 10px;">图生视频</button>
+            <button class="btn btn-secondary" onclick="window.location.href='/text2video'" style="margin-right: 10px;">文生视频</button>
+            <button class="btn btn-secondary" onclick="window.location.href='/kf2v'" style="margin-right: 10px;">首尾帧生视频</button>
+            <button class="btn btn-secondary" onclick="window.location.href='/reference2video'" style="margin-right: 10px;">参考生视频</button>
+            <button class="btn btn-secondary" onclick="window.location.href='/text2image'" style="margin-right: 10px;">文生图</button>
+            <button class="btn btn-secondary" onclick="window.location.href='/image2image'" style="margin-right: 10px;">图生图</button>
+            <button class="btn btn-secondary" onclick="window.location.href='/voice-clone'" style="margin-right: 10px;">语音复刻</button>
+            <button class="btn btn-secondary" onclick="logout()">退出</button>
+        </div>
+    </div>
+    
+    <div class="assets-content">
+        <!-- 左侧：分类标签和上传 -->
+        <div class="assets-sidebar">
+            <div class="category-tabs">
+                <button class="category-tab active" data-category="storyboard" onclick="switchCategory('storyboard')">
+                    🎬 分镜库
+                </button>
+                <button class="category-tab" data-category="artwork" onclick="switchCategory('artwork')">
+                    🎨 原画库
+                </button>
+                <button class="category-tab" data-category="video" onclick="switchCategory('video')">
+                    🎥 视频库
+                </button>
+            </div>
+            
+            <div class="upload-section">
+                <h3>上传资产</h3>
+                <div class="upload-preset">
+                    <div class="preset-row">
+                        <label>项目</label>
+                        <select id="uploadProjectSelect" class="preset-select" onchange="onUploadProjectChange()">
+                            <option value="">不指定</option>
+                        </select>
+                    </div>
+                    <div class="preset-row">
+                        <label>分集</label>
+                        <select id="uploadEpisodeSelect" class="preset-select">
+                            <option value="">不指定</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="upload-area" id="uploadArea">
+                    <input type="file" id="fileInput" accept="image/*,video/*" style="display: none;" multiple>
+                    <div class="upload-placeholder" onclick="document.getElementById('fileInput').click()">
+                        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                            <polyline points="17 8 12 3 7 8"></polyline>
+                            <line x1="12" y1="3" x2="12" y2="15"></line>
+                        </svg>
+                        <p id="uploadHint">点击或拖拽上传文件</p>
+                        <small id="uploadTip">支持批量上传，可同时选择多个文件</small>
+                    </div>
+                </div>
+                <div id="uploadProgress" class="upload-progress" style="display: none;">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progressFill"></div>
+                    </div>
+                    <span id="progressText">上传中...</span>
+                </div>
+            </div>
+            
+            <div class="category-info">
+                <div id="categoryDescription">
+                    <h4>分镜库</h4>
+                    <p>用于存储分镜图片，可在图生视频、首尾帧生视频等模块中使用。</p>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 右侧：资产列表 -->
+        <div class="assets-main">
+            <div class="assets-header">
+                <h2 id="categoryTitle">分镜库</h2>
+                <div class="assets-filters">
+                    <select id="projectFilter" class="filter-select" onchange="onProjectFilterChange()">
+                        <option value="">全部项目</option>
+                    </select>
+                    <select id="episodeFilter" class="filter-select" onchange="applyFilters()">
+                        <option value="">全部分集</option>
+                    </select>
+                </div>
+                <div class="assets-actions">
+                    <span id="assetCount">0 个资产</span>
+                    <button class="btn btn-secondary btn-sm" onclick="openProjectManageModal()" title="管理项目和分集">项目管理</button>
+                    <button class="btn btn-secondary btn-sm" onclick="toggleSelectMode()" id="selectModeBtn">
+                        批量选择
+                    </button>
+                    <button class="btn btn-primary btn-sm" onclick="openBatchTagModal()" id="batchTagBtn" style="display:none;">
+                        设置标签 (<span id="tagCount">0</span>)
+                    </button>
+                    <button class="btn btn-primary btn-sm" onclick="downloadSelected()" id="downloadSelectedBtn" style="display:none;">
+                        下载选中 (<span id="downloadCount">0</span>)
+                    </button>
+                    <button class="btn btn-danger btn-sm" onclick="deleteSelected()" id="deleteSelectedBtn" style="display:none;">
+                        删除选中 (<span id="selectedCount">0</span>)
+                    </button>
+                </div>
+            </div>
+            
+            <div id="assetList" class="asset-grid">
+                <div class="loading">加载中...</div>
+            </div>
+            
+            <div id="loadMore" class="load-more" style="display: none;">
+                <button class="btn btn-secondary" onclick="loadMoreAssets()">加载更多</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 图片/视频预览模态框 -->
+<div class="preview-modal" id="previewModal" onclick="closePreviewModal()">
+    <div class="preview-modal-content" onclick="event.stopPropagation()">
+        <button class="preview-modal-close" onclick="closePreviewModal()">&times;</button>
+        <img id="previewImage" style="display: none;">
+        <video id="previewVideo" controls style="display: none;"></video>
+    </div>
+</div>
+
+<!-- 标签编辑弹窗 -->
+<div class="tag-modal" id="tagModal" onclick="closeTagModal()">
+    <div class="tag-modal-content" onclick="event.stopPropagation()">
+        <div class="tag-modal-header">
+            <h3 id="tagModalTitle">编辑资产</h3>
+            <button class="tag-modal-close" onclick="closeTagModal()">&times;</button>
+        </div>
+        <div class="tag-modal-body">
+            <div class="tag-form-group" id="renameFormGroup">
+                <label>名称</label>
+                <input type="text" id="tagNameInput" class="tag-input" placeholder="输入名称" style="width: 100%;">
+            </div>
+            <div class="tag-form-group">
+                <label>项目</label>
+                <select id="tagProjectSelect" class="tag-select" onchange="onProjectChange()" style="width: 100%;">
+                    <option value="">未分配</option>
+                </select>
+            </div>
+            <div class="tag-form-group">
+                <label>分集</label>
+                <select id="tagEpisodeSelect" class="tag-select" style="width: 100%;">
+                    <option value="">未分配</option>
+                </select>
+            </div>
+        </div>
+        <div class="tag-modal-footer">
+            <button class="btn btn-secondary" onclick="closeTagModal()">取消</button>
+            <button class="btn btn-primary" onclick="saveTagChanges()" id="saveTagBtn">保存</button>
+        </div>
+    </div>
+</div>
+
+<!-- 项目管理弹窗 -->
+<div class="project-manage-modal" id="projectManageModal" onclick="closeProjectManageModal()">
+    <div class="project-manage-content" onclick="event.stopPropagation()">
+        <div class="project-manage-header">
+            <h3>项目与分集管理</h3>
+            <button class="project-manage-close" onclick="closeProjectManageModal()">&times;</button>
+        </div>
+        <div class="project-manage-body">
+            <div class="project-list-section">
+                <div class="section-header">
+                    <span>项目列表</span>
+                    <button class="btn btn-primary btn-sm" onclick="showAddProjectForm()">＋ 新建项目</button>
+                </div>
+                <div id="addProjectForm" class="add-form" style="display:none;">
+                    <input type="text" id="addProjectNameInput" class="add-form-input" placeholder="输入项目名称">
+                    <button class="btn btn-primary btn-sm" onclick="confirmAddProject()">添加</button>
+                    <button class="btn btn-secondary btn-sm" onclick="hideAddProjectForm()">取消</button>
+                </div>
+                <div id="projectListContainer" class="project-tree">
+                    <div class="loading">加载中...</div>
+                </div>
+            </div>
+        </div>
+        <div class="project-manage-footer">
+            <button class="btn btn-secondary" onclick="closeProjectManageModal()">关闭</button>
+        </div>
+    </div>
+</div>
+
+<style>
+.assets-content {
+    display: grid;
+    grid-template-columns: 300px 1fr;
+    gap: 24px;
+    padding: 24px;
+    min-height: calc(100vh - 80px);
+}
+
+.assets-sidebar {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.category-tabs {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background: var(--bg-primary);
+    padding: 16px;
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-md);
+}
+
+.category-tab {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-secondary);
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    transition: all 0.2s;
+    text-align: left;
+}
+
+.category-tab:hover {
+    background: var(--bg-tertiary);
+    border-color: var(--primary-color);
+}
+
+.category-tab.active {
+    background: var(--primary-color);
+    color: white;
+    border-color: var(--primary-color);
+}
+
+.upload-section {
+    background: var(--bg-primary);
+    padding: 16px;
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-md);
+}
+
+.upload-section h3 {
+    margin: 0 0 12px 0;
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.upload-preset {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.preset-row {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.preset-row label {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.preset-select {
+    padding: 6px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-secondary);
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.preset-select:focus {
+    outline: none;
+    border-color: var(--primary-color);
+}
+
+.upload-area {
+    border: 2px dashed var(--border-color);
+    border-radius: var(--radius-md);
+    padding: 30px 20px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.3s;
+}
+
+.upload-area:hover, .upload-area.dragover {
+    border-color: var(--primary-color);
+    background: rgba(22, 100, 255, 0.05);
+}
+
+.upload-placeholder svg {
+    color: var(--text-tertiary);
+    margin-bottom: 12px;
+}
+
+.upload-placeholder p {
+    color: var(--text-secondary);
+    margin: 0 0 8px 0;
+    font-size: 14px;
+}
+
+.upload-placeholder small {
+    color: var(--text-tertiary);
+    font-size: 12px;
+}
+
+.upload-progress {
+    margin-top: 12px;
+}
+
+.progress-bar {
+    height: 6px;
+    background: var(--bg-tertiary);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.progress-fill {
+    height: 100%;
+    background: var(--primary-color);
+    width: 0%;
+    transition: width 0.3s;
+}
+
+.category-info {
+    background: var(--bg-primary);
+    padding: 16px;
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-md);
+}
+
+.category-info h4 {
+    margin: 0 0 8px 0;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.category-info p {
+    margin: 0;
+    font-size: 13px;
+    color: var(--text-secondary);
+    line-height: 1.6;
+}
+
+.assets-main {
+    background: var(--bg-primary);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-md);
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+}
+
+.assets-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border-light);
+}
+
+.assets-header h2 {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 600;
+}
+
+.assets-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+#assetCount {
+    color: var(--text-secondary);
+    font-size: 14px;
+}
+
+.asset-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 16px;
+    flex: 1;
+    overflow-y: auto;
+    max-height: calc(100vh - 300px);
+}
+
+.asset-item {
+    position: relative;
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    cursor: pointer;
+    transition: all 0.3s;
+    border: 2px solid transparent;
+    background: var(--bg-tertiary);
+    aspect-ratio: 1;
+}
+
+.asset-item:hover {
+    transform: translateY(-4px);
+    box-shadow: var(--shadow-lg);
+    border-color: var(--primary-color);
+}
+
+.asset-item.selected {
+    border-color: #dc3545;
+    box-shadow: 0 0 0 2px rgba(220, 53, 69, 0.3);
+}
+
+.asset-item img, .asset-item video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.asset-item .asset-overlay {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: linear-gradient(transparent, rgba(0,0,0,0.8));
+    padding: 30px 10px 10px;
+    color: white;
+}
+
+.asset-item .asset-name {
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.asset-item .asset-checkbox {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 22px;
+    height: 22px;
+    display: none;
+    z-index: 10;
+    accent-color: #dc3545;
+}
+
+.asset-item.select-mode .asset-checkbox {
+    display: block;
+}
+
+.asset-item .video-badge {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    background: rgba(0,0,0,0.7);
+    color: white;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    z-index: 5;
+}
+
+/* 视频封面图样式 */
+.video-poster-preview {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    background: #1a1a1a;
+}
+
+/* 视频播放按钮视觉提示 */
+.asset-item:has(.video-poster-preview)::before {
+    content: '▶';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 44px;
+    height: 44px;
+    background: rgba(0,0,0,0.6);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-size: 18px;
+    z-index: 5;
+    pointer-events: none;
+    transition: all 0.2s;
+}
+
+.asset-item:has(.video-poster-preview):hover::before {
+    background: rgba(22, 100, 255, 0.9);
+    transform: translate(-50%, -50%) scale(1.1);
+}
+
+.asset-item .delete-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 28px;
+    height: 28px;
+    background: rgba(220, 53, 69, 0.9);
+    color: white;
+    border: none;
+    border-radius: 50%;
+    cursor: pointer;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    transition: all 0.2s;
+}
+
+.asset-item:hover .delete-btn {
+    display: flex;
+}
+
+.asset-item.select-mode .delete-btn {
+    display: none;
+}
+
+.load-more {
+    text-align: center;
+    padding: 20px;
+}
+
+.loading {
+    text-align: center;
+    padding: 60px;
+    color: var(--text-tertiary);
+}
+
+.empty-state {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--text-tertiary);
+}
+
+.empty-state svg {
+    margin-bottom: 16px;
+    opacity: 0.5;
+}
+
+.empty-state p {
+    margin: 0;
+    font-size: 14px;
+}
+
+/* 预览模态框 */
+.preview-modal {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0,0,0,0.9);
+    z-index: 10000;
+    justify-content: center;
+    align-items: center;
+}
+
+.preview-modal.active {
+    display: flex;
+}
+
+.preview-modal-content {
+    max-width: 90%;
+    max-height: 90%;
+    position: relative;
+}
+
+.preview-modal-content img, .preview-modal-content video {
+    max-width: 100%;
+    max-height: 85vh;
+    border-radius: 8px;
+}
+
+.preview-modal-close {
+    position: absolute;
+    top: -40px;
+    right: 0;
+    color: white;
+    font-size: 30px;
+    cursor: pointer;
+    background: none;
+    border: none;
+    padding: 5px 15px;
+}
+
+@media (max-width: 900px) {
+    .assets-content {
+        grid-template-columns: 1fr;
+    }
+    
+    .assets-sidebar {
+        flex-direction: row;
+        flex-wrap: wrap;
+    }
+    
+    .category-tabs {
+        flex-direction: row;
+        flex: 1;
+    }
+    
+    .upload-section, .category-info {
+        flex: 1;
+        min-width: 200px;
+    }
+}
+
+/* 筛选下拉框 */
+.assets-filters {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.filter-select {
+    padding: 6px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-secondary);
+    font-size: 13px;
+    cursor: pointer;
+    min-width: 100px;
+}
+
+.filter-select:focus {
+    outline: none;
+    border-color: var(--primary-color);
+}
+
+/* 资产标签徽章 */
+.asset-tags {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    z-index: 6;
+}
+
+.asset-tag {
+    display: inline-block;
+    padding: 2px 6px;
+    background: rgba(22, 100, 255, 0.9);
+    color: white;
+    font-size: 10px;
+    border-radius: 3px;
+    max-width: 80px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.asset-tag.episode {
+    background: rgba(40, 167, 69, 0.9);
+}
+
+.asset-item .edit-tag-btn {
+    position: absolute;
+    top: 8px;
+    right: 36px;
+    width: 28px;
+    height: 28px;
+    background: rgba(22, 100, 255, 0.9);
+    color: white;
+    border: none;
+    border-radius: 50%;
+    cursor: pointer;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    transition: all 0.2s;
+}
+
+.asset-item:hover .edit-tag-btn {
+    display: flex;
+}
+
+.asset-item.select-mode .edit-tag-btn {
+    display: none;
+}
+
+/* 标签编辑弹窗 */
+.tag-modal {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.7);
+    z-index: 10001;
+    justify-content: center;
+    align-items: center;
+    backdrop-filter: blur(3px);
+}
+
+.tag-modal.active {
+    display: flex;
+}
+
+.tag-modal-content {
+    background: var(--bg-primary);
+    border-radius: 12px;
+    width: 90vw;
+    max-width: 400px;
+    box-shadow: 0 20px 50px rgba(0,0,0,0.4);
+}
+
+.tag-modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border-light);
+}
+
+.tag-modal-header h3 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.tag-modal-close {
+    background: none;
+    border: none;
+    font-size: 24px;
+    cursor: pointer;
+    color: var(--text-secondary);
+    padding: 0 8px;
+}
+
+.tag-modal-body {
+    padding: 20px;
+}
+
+.tag-form-group {
+    margin-bottom: 16px;
+}
+
+.tag-form-group:last-child {
+    margin-bottom: 0;
+}
+
+.tag-form-group label {
+    display: block;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+}
+
+.tag-input-row {
+    display: flex;
+    gap: 8px;
+}
+
+.tag-select, .tag-input {
+    flex: 1;
+    padding: 8px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-secondary);
+    font-size: 14px;
+}
+
+.tag-select:focus, .tag-input:focus {
+    outline: none;
+    border-color: var(--primary-color);
+}
+
+.tag-modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    padding: 16px 20px;
+    border-top: 1px solid var(--border-light);
+    background: var(--bg-secondary);
+    border-radius: 0 0 12px 12px;
+}
+
+/* 项目管理弹窗样式 */
+.project-manage-modal {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.7);
+    z-index: 10002;
+    justify-content: center;
+    align-items: center;
+    backdrop-filter: blur(3px);
+}
+
+.project-manage-modal.active {
+    display: flex;
+}
+
+.project-manage-content {
+    background: var(--bg-primary);
+    border-radius: 12px;
+    width: 90vw;
+    max-width: 550px;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 20px 50px rgba(0,0,0,0.4);
+}
+
+.project-manage-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border-light);
+}
+
+.project-manage-header h3 {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 600;
+}
+
+.project-manage-close {
+    background: none;
+    border: none;
+    font-size: 24px;
+    cursor: pointer;
+    color: var(--text-secondary);
+    padding: 0 8px;
+}
+
+.project-manage-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 20px;
+}
+
+.project-manage-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    padding: 16px 20px;
+    border-top: 1px solid var(--border-light);
+    background: var(--bg-secondary);
+    border-radius: 0 0 12px 12px;
+}
+
+.section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+}
+
+.section-header span {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+
+.add-form {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+    padding: 10px;
+    background: var(--bg-tertiary);
+    border-radius: var(--radius-sm);
+}
+
+.add-form-input {
+    flex: 1;
+    padding: 6px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-secondary);
+    font-size: 13px;
+}
+
+.add-form-input:focus {
+    outline: none;
+    border-color: var(--primary-color);
+}
+
+.project-tree {
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.project-item {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    margin-bottom: 8px;
+    overflow: hidden;
+}
+
+.project-header {
+    display: flex;
+    align-items: center;
+    padding: 10px 12px;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.project-header:hover {
+    background: var(--bg-tertiary);
+}
+
+.project-expand-icon {
+    width: 20px;
+    font-size: 10px;
+    color: var(--text-tertiary);
+    transition: transform 0.2s;
+}
+
+.project-item.expanded .project-expand-icon {
+    transform: rotate(90deg);
+}
+
+.project-icon {
+    margin-right: 8px;
+}
+
+.project-name {
+    flex: 1;
+    font-size: 14px;
+    font-weight: 500;
+}
+
+.project-name-input {
+    flex: 1;
+    font-size: 14px;
+    font-weight: 500;
+    padding: 2px 6px;
+    border: 1px solid var(--primary-color);
+    border-radius: 4px;
+    background: var(--bg-primary);
+    outline: none;
+    min-width: 100px;
+}
+
+.project-count {
+    font-size: 12px;
+    color: var(--text-tertiary);
+    margin-right: 8px;
+}
+
+.project-actions {
+    display: flex;
+    gap: 4px;
+}
+
+.project-action-btn {
+    background: none;
+    border: none;
+    padding: 4px 8px;
+    font-size: 12px;
+    cursor: pointer;
+    color: var(--text-secondary);
+    border-radius: 4px;
+    transition: all 0.2s;
+}
+
+.project-action-btn:hover {
+    background: var(--bg-primary);
+    color: var(--primary-color);
+}
+
+.project-action-btn.danger:hover {
+    color: #dc3545;
+}
+
+.episode-list {
+    display: none;
+    padding: 8px 12px 8px 32px;
+    background: var(--bg-tertiary);
+    border-top: 1px solid var(--border-light);
+}
+
+.project-item.expanded .episode-list {
+    display: block;
+}
+
+.episode-item {
+    display: flex;
+    align-items: center;
+    padding: 6px 8px;
+    background: var(--bg-secondary);
+    border-radius: 4px;
+    margin-bottom: 6px;
+}
+
+.episode-item:last-child {
+    margin-bottom: 0;
+}
+
+.episode-icon {
+    margin-right: 8px;
+    font-size: 12px;
+}
+
+.episode-name {
+    flex: 1;
+    font-size: 13px;
+}
+
+.episode-name-input {
+    flex: 1;
+    font-size: 13px;
+    padding: 2px 6px;
+    border: 1px solid var(--primary-color);
+    border-radius: 4px;
+    background: var(--bg-primary);
+    outline: none;
+    min-width: 80px;
+}
+
+.episode-actions {
+    display: flex;
+    gap: 4px;
+}
+
+.add-episode-btn {
+    display: flex;
+    align-items: center;
+    padding: 6px 8px;
+    background: transparent;
+    border: 1px dashed var(--border-color);
+    border-radius: 4px;
+    margin-top: 8px;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--text-tertiary);
+    transition: all 0.2s;
+}
+
+.add-episode-btn:hover {
+    border-color: var(--primary-color);
+    color: var(--primary-color);
+}
+
+.add-episode-form {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.add-episode-input {
+    flex: 1;
+    padding: 6px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--bg-secondary);
+    font-size: 12px;
+}
+
+.empty-projects {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--text-tertiary);
+}
+
+.empty-projects p {
+    margin: 8px 0 0 0;
+    font-size: 14px;
+}
+
+.edit-input {
+    padding: 4px 8px;
+    border: 1px solid var(--primary-color);
+    border-radius: 4px;
+    font-size: 13px;
+    background: var(--bg-primary);
+}
+</style>
+
+<script>
+// 当前分类
+let currentCategory = 'storyboard';
+let currentPage = 1;
+let hasMore = false;
+let isSelectMode = false;
+let selectedAssets = new Set();
+
+// 项目和筛选相关
+let projectsList = [];
+let currentFilterProject = '';
+let currentFilterEpisode = '';
+let editingAsset = null;  // 当前正在编辑标签的资产
+let isBatchTagMode = false;  // 是否为批量标签模式
+
+// 分类信息
+const categoryInfo = {
+    storyboard: {
+        title: '分镜库',
+        icon: '🎬',
+        description: '用于存储分镜图片，可在图生视频、首尾帧生视频等模块中使用。',
+        accept: 'image/*',
+        tip: '支持 JPG、PNG、BMP、WEBP、GIF 格式'
+    },
+    artwork: {
+        title: '原画库',
+        icon: '🎨',
+        description: '用于存储原画和角色设计图，可在图生视频、图生图等模块中使用。',
+        accept: 'image/*',
+        tip: '支持 JPG、PNG、BMP、WEBP、GIF 格式'
+    },
+    video: {
+        title: '视频库',
+        icon: '🎥',
+        description: '用于存储参考视频素材，便于管理和查看。',
+        accept: 'video/*',
+        tip: '支持 MP4、MOV、AVI、WEBM 格式'
+    }
+};
+
+// 切换分类
+function switchCategory(category) {
+    currentCategory = category;
+    currentPage = 1;
+    selectedAssets.clear();
+    updateSelectedCount();
+    
+    // 更新标签样式
+    document.querySelectorAll('.category-tab').forEach(tab => {
+        tab.classList.toggle('active', tab.dataset.category === category);
+    });
+    
+    // 更新信息
+    const info = categoryInfo[category];
+    document.getElementById('categoryTitle').textContent = info.title;
+    document.getElementById('categoryDescription').innerHTML = `
+        <h4>${info.title}</h4>
+        <p>${info.description}</p>
+    `;
+    document.getElementById('uploadHint').textContent = '点击或拖拽上传文件';
+    document.getElementById('uploadTip').textContent = `${info.tip}，支持批量上传，可同时选择多个文件`;
+    document.getElementById('fileInput').accept = info.accept;
+    
+    // 加载资产
+    loadAssets();
+}
+
+// 加载资产
+async function loadAssets(append = false) {
+    const assetList = document.getElementById('assetList');
+    
+    if (!append) {
+        assetList.innerHTML = '<div class="loading">加载中...</div>';
+    }
+    
+    try {
+        // 构建查询参数，包含筛选条件
+        let url = `/api/assets/list?category=${currentCategory}&page=${currentPage}&limit=20`;
+        if (currentFilterProject) {
+            url += `&project=${encodeURIComponent(currentFilterProject)}`;
+        }
+        if (currentFilterEpisode) {
+            url += `&episode=${encodeURIComponent(currentFilterEpisode)}`;
+        }
+        
+        const response = await fetch(url);
+        const data = await response.json();
+        
+        if (data.success) {
+            if (!append) {
+                assetList.innerHTML = '';
+            }
+            
+            if (data.assets.length === 0 && !append) {
+                assetList.innerHTML = `
+                    <div class="empty-state">
+                        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                            <circle cx="8.5" cy="8.5" r="1.5"></circle>
+                            <polyline points="21 15 16 10 5 21"></polyline>
+                        </svg>
+                        <p>暂无资产，点击上方区域上传</p>
+                    </div>
+                `;
+            } else {
+                data.assets.forEach(asset => {
+                    assetList.appendChild(createAssetItem(asset));
+                });
+            }
+            
+            hasMore = data.has_more;
+            document.getElementById('loadMore').style.display = hasMore ? 'block' : 'none';
+            document.getElementById('assetCount').textContent = `${data.total} 个资产`;
+        }
+    } catch (error) {
+        console.error('加载资产失败:', error);
+        assetList.innerHTML = '<div class="empty-state"><p>加载失败，请刷新重试</p></div>';
+    }
+}
+
+// 创建资产项
+function createAssetItem(asset) {
+    const div = document.createElement('div');
+    div.className = 'asset-item' + (isSelectMode ? ' select-mode' : '');
+    div.dataset.filename = asset.filename;
+    div.dataset.category = asset.category;
+    div.dataset.url = asset.url;  // 添加URL用于下载
+    div.dataset.project = asset.project || '';
+    div.dataset.episode = asset.episode || '';
+    
+    const isVideo = asset.file_type === 'video';
+    
+    // 视频使用封面图，避免直接加载视频导致带宽过大
+    let mediaContent;
+    if (isVideo) {
+        // 使用封面图替代video标签，大幅减少加载量
+        const posterUrl = asset.poster_url || '';
+        mediaContent = `<img src="${posterUrl}" alt="${asset.original_filename}" loading="lazy" class="video-poster-preview" onerror="this.style.background='#333'">`;
+    } else {
+        mediaContent = `<img src="${asset.url}" alt="${asset.original_filename}" loading="lazy">`;
+    }
+    
+    // 构建标签徽章HTML
+    let tagsHtml = '';
+    if (asset.project || asset.episode) {
+        tagsHtml = '<div class="asset-tags">';
+        if (asset.project) {
+            tagsHtml += `<span class="asset-tag" title="${asset.project}">${asset.project}</span>`;
+        }
+        if (asset.episode) {
+            tagsHtml += `<span class="asset-tag episode" title="${asset.episode}">${asset.episode}</span>`;
+        }
+        tagsHtml += '</div>';
+    }
+    
+    div.innerHTML = `
+        <input type="checkbox" class="asset-checkbox" onclick="event.stopPropagation(); toggleSelect('${asset.filename}')">
+        ${isVideo ? '<span class="video-badge">🎬 视频</span>' : ''}
+        ${tagsHtml}
+        ${mediaContent}
+        <div class="asset-overlay">
+            <div class="asset-name" title="${asset.original_filename}">${asset.original_filename}</div>
+        </div>
+        <button class="edit-tag-btn" onclick="event.stopPropagation(); openTagModal('${asset.category}', '${asset.filename}', '${asset.project || ''}', '${asset.episode || ''}', '${escapeQuotes(asset.original_filename)}')" title="编辑">✏</button>
+        <button class="delete-btn" onclick="event.stopPropagation(); deleteAsset('${asset.category}', '${asset.filename}')" title="删除">×</button>
+    `;
+    
+    div.onclick = () => {
+        if (isSelectMode) {
+            toggleSelect(asset.filename);
+        } else {
+            previewAsset(asset);
+        }
+    };
+    
+    return div;
+}
+
+// 加载更多
+function loadMoreAssets() {
+    currentPage++;
+    loadAssets(true);
+}
+
+// 上传文件
+const fileInput = document.getElementById('fileInput');
+const uploadArea = document.getElementById('uploadArea');
+
+fileInput.addEventListener('change', handleFileSelect);
+
+uploadArea.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    uploadArea.classList.add('dragover');
+});
+
+uploadArea.addEventListener('dragleave', () => {
+    uploadArea.classList.remove('dragover');
+});
+
+uploadArea.addEventListener('drop', (e) => {
+    e.preventDefault();
+    uploadArea.classList.remove('dragover');
+    handleFiles(e.dataTransfer.files);
+});
+
+function handleFileSelect(e) {
+    handleFiles(e.target.files);
+    e.target.value = '';
+}
+
+async function handleFiles(files) {
+    const progressDiv = document.getElementById('uploadProgress');
+    const progressFill = document.getElementById('progressFill');
+    const progressText = document.getElementById('progressText');
+    
+    progressDiv.style.display = 'block';
+    
+    let uploaded = 0;
+    const total = files.length;
+    
+    // 显示总文件数
+    progressText.textContent = `准备上传 ${total} 个文件...`;
+    
+    try {
+        // 批量上传所有文件
+        const formData = new FormData();
+        for (let i = 0; i < files.length; i++) {
+            formData.append('file', files[i]);
+        }
+        formData.append('category', currentCategory);
+        
+        progressText.textContent = `正在上传 ${total} 个文件...`;
+        progressFill.style.width = '50%';
+        
+        const response = await fetch('/api/assets/upload', {
+            method: 'POST',
+            body: formData
+        });
+        
+        const data = await response.json();
+        
+        if (data.success && data.files) {
+            uploaded = data.files.length;
+            progressFill.style.width = '100%';
+            progressText.textContent = `上传完成 (${uploaded}/${total})`;
+            
+            // 检查是否有预设的项目/分集，如果有则自动设置标签
+            const presetProject = document.getElementById('uploadProjectSelect')?.value || '';
+            const presetEpisode = document.getElementById('uploadEpisodeSelect')?.value || '';
+            
+            if (presetProject && data.files && data.files.length > 0) {
+                // 批量设置标签
+                const assets = data.files.map(f => ({
+                    category: f.category || currentCategory,
+                    filename: f.filename
+                }));
+                
+                try {
+                    await fetch('/api/assets/batch-tags', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            assets,
+                            project: presetProject,
+                            episode: presetEpisode
+                        })
+                    });
+                    progressText.textContent = `上传并标记完成`;
+                } catch (e) {
+                    console.error('设置标签失败:', e);
+                }
+            }
+            
+            // 刷新列表
+            currentPage = 1;
+            loadAssets();
+            loadProjects();  // 刷新项目列表
+            
+            // 显示上传结果通知
+            showAlert(data.message || `成功上传 ${uploaded} 个文件`, 'success');
+        } else {
+            throw new Error(data.message || '上传失败');
+        }
+    } catch (error) {
+        console.error('上传失败:', error);
+        progressFill.style.width = '100%';
+        progressText.textContent = '上传失败';
+        showAlert(`上传失败: ${error.message}`, 'error');
+    }
+    
+    setTimeout(() => {
+        progressDiv.style.display = 'none';
+        progressFill.style.width = '0%';
+    }, 2000);
+}
+
+async function uploadFile(file) {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('category', currentCategory);
+    
+    const response = await fetch('/api/assets/upload', {
+        method: 'POST',
+        body: formData
+    });
+    
+    const data = await response.json();
+    
+    if (!data.success) {
+        throw new Error(data.message);
+    }
+    
+    // 返回第一个上传的文件信息（为了保持向后兼容性）
+    return data.files && data.files.length > 0 ? data.files[0] : data;
+}
+
+// 删除资产
+async function deleteAsset(category, filename) {
+    if (!confirm('确定要删除这个资产吗？')) return;
+    
+    try {
+        const response = await fetch('/api/assets/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ category, filename })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            showAlert('删除成功', 'success');
+            currentPage = 1;
+            loadAssets();
+        } else {
+            showAlert(data.message || '删除失败', 'error');
+        }
+    } catch (error) {
+        showAlert('删除失败', 'error');
+    }
+}
+
+// 批量选择模式
+function toggleSelectMode() {
+    isSelectMode = !isSelectMode;
+    selectedAssets.clear();
+    updateSelectedCount();
+    
+    document.getElementById('selectModeBtn').textContent = isSelectMode ? '取消选择' : '批量选择';
+    document.getElementById('deleteSelectedBtn').style.display = isSelectMode ? 'inline-flex' : 'none';
+    document.getElementById('downloadSelectedBtn').style.display = isSelectMode ? 'inline-flex' : 'none';
+    document.getElementById('batchTagBtn').style.display = isSelectMode ? 'inline-flex' : 'none';
+    
+    document.querySelectorAll('.asset-item').forEach(item => {
+        item.classList.toggle('select-mode', isSelectMode);
+        item.querySelector('.asset-checkbox').checked = false;
+    });
+}
+
+function toggleSelect(filename) {
+    if (selectedAssets.has(filename)) {
+        selectedAssets.delete(filename);
+    } else {
+        selectedAssets.add(filename);
+    }
+    
+    const item = document.querySelector(`.asset-item[data-filename="${filename}"]`);
+    if (item) {
+        item.classList.toggle('selected', selectedAssets.has(filename));
+        item.querySelector('.asset-checkbox').checked = selectedAssets.has(filename);
+    }
+    
+    updateSelectedCount();
+}
+
+function updateSelectedCount() {
+    document.getElementById('selectedCount').textContent = selectedAssets.size;
+    document.getElementById('downloadCount').textContent = selectedAssets.size;
+    document.getElementById('tagCount').textContent = selectedAssets.size;
+}
+
+// 下载选中的资产
+async function downloadSelected() {
+    if (selectedAssets.size === 0) {
+        showAlert('请先选择要下载的资产', 'info');
+        return;
+    }
+    
+    showAlert(`开始下载 ${selectedAssets.size} 个文件...`, 'success');
+    
+    let downloadCount = 0;
+    for (const filename of selectedAssets) {
+        const item = document.querySelector(`.asset-item[data-filename="${filename}"]`);
+        if (item) {
+            const url = item.dataset.url;
+            const category = item.dataset.category;
+            
+            if (url) {
+                try {
+                    // 使用fetch下载文件
+                    const response = await fetch(url);
+                    const blob = await response.blob();
+                    
+                    // 创建下载链接
+                    const link = document.createElement('a');
+                    link.href = URL.createObjectURL(blob);
+                    link.download = filename;
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    URL.revokeObjectURL(link.href);
+                    
+                    downloadCount++;
+                    
+                    // 延迟一下避免浏览器限制
+                    await new Promise(resolve => setTimeout(resolve, 300));
+                } catch (error) {
+                    console.error('下载失败:', filename, error);
+                }
+            }
+        }
+    }
+    
+    if (downloadCount > 0) {
+        showAlert(`已下载 ${downloadCount} 个文件`, 'success');
+    }
+}
+
+async function deleteSelected() {
+    if (selectedAssets.size === 0) {
+        showAlert('请先选择要删除的资产', 'info');
+        return;
+    }
+    
+    if (!confirm(`确定要删除选中的 ${selectedAssets.size} 个资产吗？`)) return;
+    
+    for (const filename of selectedAssets) {
+        const item = document.querySelector(`.asset-item[data-filename="${filename}"]`);
+        const category = item?.dataset.category || currentCategory;
+        
+        try {
+            await fetch('/api/assets/delete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ category, filename })
+            });
+        } catch (error) {
+            console.error('删除失败:', filename);
+        }
+    }
+    
+    showAlert('删除完成', 'success');
+    selectedAssets.clear();
+    currentPage = 1;
+    loadAssets();
+    toggleSelectMode();
+}
+
+// 预览资产
+function previewAsset(asset) {
+    const modal = document.getElementById('previewModal');
+    const img = document.getElementById('previewImage');
+    const video = document.getElementById('previewVideo');
+    
+    if (asset.file_type === 'video') {
+        img.style.display = 'none';
+        video.style.display = 'block';
+        video.src = asset.url;
+        video.play();
+    } else {
+        video.style.display = 'none';
+        img.style.display = 'block';
+        img.src = asset.url;
+    }
+    
+    modal.classList.add('active');
+}
+
+function closePreviewModal() {
+    const modal = document.getElementById('previewModal');
+    const video = document.getElementById('previewVideo');
+    
+    video.pause();
+    video.src = '';
+    modal.classList.remove('active');
+}
+
+// ========== 项目/标签管理功能 ==========
+
+// 加载项目列表
+async function loadProjects() {
+    try {
+        const response = await fetch('/api/assets/projects');
+        const data = await response.json();
+        if (data.success) {
+            projectsList = data.projects || [];
+            updateProjectFilterOptions();
+            updateTagProjectOptions();
+            updateUploadProjectOptions();  // 更新上传预设选项
+        }
+    } catch (error) {
+        console.error('加载项目列表失败:', error);
+    }
+}
+
+// 更新上传预设下拉框的项目选项
+function updateUploadProjectOptions() {
+    const select = document.getElementById('uploadProjectSelect');
+    if (!select) return;
+    const currentValue = select.value;
+    select.innerHTML = '<option value="">不指定</option>';
+    projectsList.forEach(project => {
+        const option = document.createElement('option');
+        option.value = project.name;
+        option.textContent = project.name;
+        select.appendChild(option);
+    });
+    select.value = currentValue;
+}
+
+// 更新上传预设的分集选项
+function updateUploadEpisodeOptions() {
+    const projectName = document.getElementById('uploadProjectSelect').value;
+    const select = document.getElementById('uploadEpisodeSelect');
+    if (!select) return;
+    select.innerHTML = '<option value="">不指定</option>';
+    
+    if (projectName) {
+        const project = projectsList.find(p => p.name === projectName);
+        if (project && project.episodes) {
+            project.episodes.forEach(episode => {
+                const option = document.createElement('option');
+                option.value = episode;
+                option.textContent = episode;
+                select.appendChild(option);
+            });
+        }
+    }
+}
+
+// 上传预设项目变化时更新分集选项
+function onUploadProjectChange() {
+    updateUploadEpisodeOptions();
+}
+
+// 更新筛选下拉框的项目选项
+function updateProjectFilterOptions() {
+    const select = document.getElementById('projectFilter');
+    select.innerHTML = '<option value="">全部项目</option>';
+    projectsList.forEach(project => {
+        const option = document.createElement('option');
+        option.value = project.name;
+        option.textContent = project.name;
+        if (project.name === currentFilterProject) {
+            option.selected = true;
+        }
+        select.appendChild(option);
+    });
+}
+
+// 更新分集筛选选项
+function updateEpisodeFilterOptions() {
+    const select = document.getElementById('episodeFilter');
+    select.innerHTML = '<option value="">全部分集</option>';
+    
+    if (currentFilterProject) {
+        const project = projectsList.find(p => p.name === currentFilterProject);
+        if (project && project.episodes) {
+            project.episodes.forEach(episode => {
+                const option = document.createElement('option');
+                option.value = episode;
+                option.textContent = episode;
+                if (episode === currentFilterEpisode) {
+                    option.selected = true;
+                }
+                select.appendChild(option);
+            });
+        }
+    }
+}
+
+// 应用筛选
+function applyFilters() {
+    currentFilterProject = document.getElementById('projectFilter').value;
+    currentFilterEpisode = document.getElementById('episodeFilter').value;
+    
+    // 重新加载资产
+    currentPage = 1;
+    loadAssets();
+}
+
+// 快捷创建分集
+async function quickCreateEpisode() {
+    if (!currentFilterProject) {
+        showAlert('请先选择项目', 'info');
+        return;
+    }
+    
+    const name = prompt('请输入新分集名称:');
+    if (!name || !name.trim()) return;
+    
+    try {
+        const response = await fetch(`/api/assets/projects/${encodeURIComponent(currentFilterProject)}/episodes`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: name.trim() })
+        });
+        
+        const data = await response.json();
+        if (data.success) {
+            showAlert('分集创建成功', 'success');
+            await loadProjects();
+            updateEpisodeFilterOptions();
+            // 自动选择新创建的分集
+            currentFilterEpisode = name.trim();
+            document.getElementById('episodeFilter').value = name.trim();
+            currentPage = 1;
+            loadAssets();
+        } else {
+            showAlert(data.message || '创建失败', 'error');
+        }
+    } catch (error) {
+        showAlert('创建失败', 'error');
+    }
+}
+
+// 清除筛选
+function clearFilters() {
+    currentFilterProject = '';
+    currentFilterEpisode = '';
+    document.getElementById('projectFilter').value = '';
+    document.getElementById('episodeFilter').value = '';
+    updateEpisodeFilterOptions();
+    currentPage = 1;
+    loadAssets();
+}
+
+// 更新标签编辑弹窗中的项目选项
+function updateTagProjectOptions() {
+    const select = document.getElementById('tagProjectSelect');
+    const currentValue = select.value;  // 保存当前选中的值
+    select.innerHTML = '<option value="">未分配</option>';
+    projectsList.forEach(project => {
+        const option = document.createElement('option');
+        option.value = project.name;
+        option.textContent = project.name;
+        select.appendChild(option);
+    });
+    // 恢复之前的选择
+    if (currentValue) {
+        select.value = currentValue;
+    }
+}
+
+// 更新标签编辑弹窗中的分集选项
+function updateTagEpisodeOptions() {
+    const projectName = document.getElementById('tagProjectSelect').value;
+    const select = document.getElementById('tagEpisodeSelect');
+    const currentValue = select.value;  // 保存当前选中的值
+    select.innerHTML = '<option value="">未分配</option>';
+    
+    if (projectName) {
+        const project = projectsList.find(p => p.name === projectName);
+        if (project && project.episodes) {
+            project.episodes.forEach(episode => {
+                const option = document.createElement('option');
+                option.value = episode;
+                option.textContent = episode;
+                select.appendChild(option);
+            });
+        }
+    }
+    // 恢复之前的选择
+    if (currentValue) {
+        select.value = currentValue;
+    }
+}
+
+// 项目选择变化时更新分集选项
+function onProjectChange() {
+    updateTagEpisodeOptions();
+}
+
+// 打开标签编辑弹窗（单个资产）
+function openTagModal(category, filename, project, episode, currentName) {
+    editingAsset = { category, filename, currentName };
+    isBatchTagMode = false;
+    
+    document.getElementById('tagModalTitle').textContent = '编辑资产';
+    
+    // 显示重命名输入框
+    document.getElementById('renameFormGroup').style.display = 'block';
+    document.getElementById('tagNameInput').value = currentName || '';
+    
+    // 设置当前值
+    updateTagProjectOptions();
+    document.getElementById('tagProjectSelect').value = project || '';
+    updateTagEpisodeOptions();
+    document.getElementById('tagEpisodeSelect').value = episode || '';
+    
+    // 显示弹窗
+    document.getElementById('tagModal').classList.add('active');
+}
+
+// 打开批量标签设置弹窗
+function openBatchTagModal() {
+    if (selectedAssets.size === 0) {
+        showAlert('请先选择要设置标签的资产', 'info');
+        return;
+    }
+    
+    editingAsset = null;
+    isBatchTagMode = true;
+    
+    document.getElementById('tagModalTitle').textContent = `批量设置标签 (${selectedAssets.size} 个资产)`;
+    
+    // 隐藏重命名输入框（批量模式不支持重命名）
+    document.getElementById('renameFormGroup').style.display = 'none';
+    
+    // 重置选项
+    updateTagProjectOptions();
+    document.getElementById('tagProjectSelect').value = '';
+    updateTagEpisodeOptions();
+    document.getElementById('tagEpisodeSelect').value = '';
+    
+    // 显示弹窗
+    document.getElementById('tagModal').classList.add('active');
+}
+
+// 关闭标签编辑弹窗
+function closeTagModal() {
+    document.getElementById('tagModal').classList.remove('active');
+}
+
+// 保存标签修改
+async function saveTagChanges() {
+    const project = document.getElementById('tagProjectSelect').value;
+    const episode = document.getElementById('tagEpisodeSelect').value;
+    const newName = document.getElementById('tagNameInput')?.value.trim();
+    
+    const saveBtn = document.getElementById('saveTagBtn');
+    saveBtn.disabled = true;
+    saveBtn.textContent = '保存中...';
+    
+    try {
+        if (isBatchTagMode) {
+            // 批量更新
+            const assets = [];
+            for (const filename of selectedAssets) {
+                const item = document.querySelector(`.asset-item[data-filename="${filename}"]`);
+                if (item) {
+                    assets.push({
+                        category: item.dataset.category,
+                        filename: filename
+                    });
+                }
+            }
+            
+            const response = await fetch('/api/assets/batch-tags', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ assets, project, episode })
+            });
+            
+            const data = await response.json();
+            if (data.success) {
+                showAlert(data.message || '标签更新成功', 'success');
+                closeTagModal();
+                toggleSelectMode();  // 退出选择模式
+                currentPage = 1;
+                loadAssets();
+                loadProjects();  // 刷新项目列表
+            } else {
+                showAlert(data.message || '更新失败', 'error');
+            }
+        } else {
+            // 单个更新 - 同时更新标签和名称
+            // 先更新标签
+            const tagResponse = await fetch('/api/assets/update-tags', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    category: editingAsset.category,
+                    filename: editingAsset.filename,
+                    project,
+                    episode
+                })
+            });
+            
+            const tagData = await tagResponse.json();
+            if (!tagData.success) {
+                showAlert(tagData.message || '标签更新失败', 'error');
+                return;
+            }
+            
+            // 如果名称有变化，更新名称
+            if (newName && newName !== editingAsset.currentName) {
+                const renameResponse = await fetch('/api/assets/rename', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        category: editingAsset.category,
+                        filename: editingAsset.filename,
+                        new_name: newName
+                    })
+                });
+                
+                const renameData = await renameResponse.json();
+                if (!renameData.success) {
+                    showAlert(renameData.message || '重命名失败', 'error');
+                    return;
+                }
+            }
+            
+            showAlert('保存成功', 'success');
+            closeTagModal();
+            currentPage = 1;
+            loadAssets();
+            loadProjects();  // 刷新项目列表
+        }
+    } catch (error) {
+        console.error('保存失败:', error);
+        showAlert('保存失败', 'error');
+    } finally {
+        saveBtn.disabled = false;
+        saveBtn.textContent = '保存';
+    }
+}
+
+// 转义引号
+function escapeQuotes(str) {
+    return (str || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+}
+
+// ESC关闭弹窗
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        closePreviewModal();
+        closeTagModal();
+        closeProjectManageModal();
+    }
+});
+
+// ========== 项目管理弹窗功能 ==========
+
+// 打开项目管理弹窗
+function openProjectManageModal() {
+    document.getElementById('projectManageModal').classList.add('active');
+    renderProjectTree();
+}
+
+// 关闭项目管理弹窗
+function closeProjectManageModal() {
+    document.getElementById('projectManageModal').classList.remove('active');
+    hideAddProjectForm();
+}
+
+// 渲染项目树列表
+function renderProjectTree() {
+    const container = document.getElementById('projectListContainer');
+    
+    if (projectsList.length === 0) {
+        container.innerHTML = `
+            <div class="empty-projects">
+                <span style="font-size: 40px;">📁</span>
+                <p>暂无项目，点击上方“新建项目”按钮创建</p>
+            </div>
+        `;
+        return;
+    }
+    
+    let html = '';
+    projectsList.forEach(project => {
+        const episodes = project.episodes || [];
+        html += `
+            <div class="project-item" data-project="${escapeHtml(project.name)}">
+                <div class="project-header" onclick="toggleProjectExpand(this)">
+                    <span class="project-expand-icon">▶</span>
+                    <span class="project-icon">📁</span>
+                    <span class="project-name" id="projectName_${escapeHtml(project.name).replace(/\s/g, '_')}">${escapeHtml(project.name)}</span>
+                    <input type="text" class="project-name-input" id="projectNameInput_${escapeHtml(project.name).replace(/\s/g, '_')}" style="display:none;" value="${escapeHtml(project.name)}" onclick="event.stopPropagation()" onkeydown="handleProjectRenameKey(event, '${escapeQuotes(project.name)}')" onblur="saveProjectRename('${escapeQuotes(project.name)}')">
+                    <span class="project-count">${episodes.length} 个分集</span>
+                    <div class="project-actions" onclick="event.stopPropagation()">
+                        <button class="project-action-btn" onclick="startProjectRename('${escapeQuotes(project.name)}')" title="重命名">✏️</button>
+                        <button class="project-action-btn danger" onclick="deleteProjectPrompt('${escapeQuotes(project.name)}')" title="删除">🗑</button>
+                    </div>
+                </div>
+                <div class="episode-list">
+                    ${episodes.map(ep => `
+                        <div class="episode-item" data-episode="${escapeHtml(ep)}">
+                            <span class="episode-icon">🎬</span>
+                            <span class="episode-name" id="episodeName_${escapeHtml(project.name).replace(/\s/g, '_')}_${escapeHtml(ep).replace(/\s/g, '_')}">${escapeHtml(ep)}</span>
+                            <input type="text" class="episode-name-input" id="episodeNameInput_${escapeHtml(project.name).replace(/\s/g, '_')}_${escapeHtml(ep).replace(/\s/g, '_')}" style="display:none;" value="${escapeHtml(ep)}" onkeydown="handleEpisodeRenameKey(event, '${escapeQuotes(project.name)}', '${escapeQuotes(ep)}')" onblur="saveEpisodeRename('${escapeQuotes(project.name)}', '${escapeQuotes(ep)}')">
+                            <div class="episode-actions">
+                                <button class="project-action-btn" onclick="startEpisodeRename('${escapeQuotes(project.name)}', '${escapeQuotes(ep)}')" title="重命名">✏️</button>
+                                <button class="project-action-btn danger" onclick="deleteEpisodePrompt('${escapeQuotes(project.name)}', '${escapeQuotes(ep)}')" title="删除">🗑</button>
+                            </div>
+                        </div>
+                    `).join('')}
+                    <div id="addEpisodeForm_${escapeHtml(project.name).replace(/\s/g, '_')}" class="add-episode-form" style="display:none;">
+                        <input type="text" class="add-episode-input" placeholder="输入分集名称" onkeydown="if(event.key==='Enter') confirmAddEpisode('${escapeQuotes(project.name)}')">
+                        <button class="btn btn-primary btn-sm" onclick="confirmAddEpisode('${escapeQuotes(project.name)}')">添加</button>
+                        <button class="btn btn-secondary btn-sm" onclick="hideAddEpisodeForm('${escapeQuotes(project.name)}')">取消</button>
+                    </div>
+                    <button class="add-episode-btn" onclick="showAddEpisodeForm('${escapeQuotes(project.name)}')">
+                        ＋ 添加分集
+                    </button>
+                </div>
+            </div>
+        `;
+    });
+    
+    container.innerHTML = html;
+}
+
+// 展开/收起项目
+function toggleProjectExpand(header) {
+    const projectItem = header.closest('.project-item');
+    projectItem.classList.toggle('expanded');
+}
+
+// 显示添加项目表单
+function showAddProjectForm() {
+    document.getElementById('addProjectForm').style.display = 'flex';
+    document.getElementById('addProjectNameInput').focus();
+}
+
+// 隐藏添加项目表单
+function hideAddProjectForm() {
+    document.getElementById('addProjectForm').style.display = 'none';
+    document.getElementById('addProjectNameInput').value = '';
+}
+
+// 确认添加项目
+async function confirmAddProject() {
+    const input = document.getElementById('addProjectNameInput');
+    const name = input.value.trim();
+    
+    if (!name) {
+        showAlert('请输入项目名称', 'error');
+        return;
+    }
+    
+    try {
+        const response = await fetch('/api/assets/projects', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name })
+        });
+        
+        const data = await response.json();
+        if (data.success) {
+            showAlert('项目创建成功', 'success');
+            await loadProjects();
+            renderProjectTree();
+            hideAddProjectForm();
+        } else {
+            showAlert(data.message || '创建失败', 'error');
+        }
+    } catch (error) {
+        showAlert('创建失败', 'error');
+    }
+}
+
+// 开始项目重命名（内联编辑）
+function startProjectRename(projectName) {
+    event.stopPropagation();
+    const safeId = projectName.replace(/\s/g, '_');
+    const nameSpan = document.getElementById('projectName_' + safeId);
+    const nameInput = document.getElementById('projectNameInput_' + safeId);
+    
+    if (nameSpan && nameInput) {
+        nameSpan.style.display = 'none';
+        nameInput.style.display = 'inline-block';
+        nameInput.value = projectName;
+        nameInput.focus();
+        nameInput.select();
+    }
+}
+
+// 处理项目重命名按键
+function handleProjectRenameKey(event, projectName) {
+    if (event.key === 'Enter') {
+        event.preventDefault();
+        event.target.blur();
+    } else if (event.key === 'Escape') {
+        event.preventDefault();
+        cancelProjectRename(projectName);
+    }
+}
+
+// 取消项目重命名
+function cancelProjectRename(projectName) {
+    const safeId = projectName.replace(/\s/g, '_');
+    const nameSpan = document.getElementById('projectName_' + safeId);
+    const nameInput = document.getElementById('projectNameInput_' + safeId);
+    
+    if (nameSpan && nameInput) {
+        nameInput.value = projectName;
+        nameInput.style.display = 'none';
+        nameSpan.style.display = 'inline';
+    }
+}
+
+// 保存项目重命名
+let isProjectRenaming = false;
+async function saveProjectRename(projectName) {
+    if (isProjectRenaming) return;
+    
+    const safeId = projectName.replace(/\s/g, '_');
+    const nameSpan = document.getElementById('projectName_' + safeId);
+    const nameInput = document.getElementById('projectNameInput_' + safeId);
+    
+    if (!nameInput) return;
+    
+    const newName = nameInput.value.trim();
+    
+    // 如果名称没变化或为空，取消编辑
+    if (!newName || newName === projectName) {
+        if (nameSpan) {
+            nameInput.style.display = 'none';
+            nameSpan.style.display = 'inline';
+        }
+        return;
+    }
+    
+    isProjectRenaming = true;
+    
+    try {
+        const response = await fetch(`/api/assets/projects/${encodeURIComponent(projectName)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: newName })
+        });
+        
+        const data = await response.json();
+        if (data.success) {
+            showAlert(data.message || '重命名成功', 'success');
+            await loadProjects();
+            renderProjectTree();
+            // 如果当前筛选的是这个项目，更新筛选
+            if (currentFilterProject === projectName) {
+                currentFilterProject = newName;
+                document.getElementById('projectFilter').value = newName;
+            }
+        } else {
+            showAlert(data.message || '重命名失败', 'error');
+            // 恢复原来的显示
+            if (nameSpan) {
+                nameInput.style.display = 'none';
+                nameSpan.style.display = 'inline';
+            }
+        }
+    } catch (error) {
+        showAlert('重命名失败', 'error');
+        if (nameSpan) {
+            nameInput.style.display = 'none';
+            nameSpan.style.display = 'inline';
+        }
+    } finally {
+        isProjectRenaming = false;
+    }
+}
+
+// 删除项目提示
+async function deleteProjectPrompt(projectName) {
+    // 先获取项目关联的资产数量
+    let assetCount = 0;
+    try {
+        const response = await fetch(`/api/assets/projects/${encodeURIComponent(projectName)}/asset-count`);
+        const data = await response.json();
+        if (data.success) {
+            assetCount = data.count;
+        }
+    } catch (e) {}
+    
+    let message = `确定要删除项目“${projectName}”吗？`;
+    if (assetCount > 0) {
+        message += `\n\n⚠️ 该项目下有 ${assetCount} 个资产，删除后这些资产的项目标签将被清空。`;
+    }
+    
+    if (!confirm(message)) return;
+    
+    try {
+        const response = await fetch(`/api/assets/projects/${encodeURIComponent(projectName)}`, {
+            method: 'DELETE'
+        });
+        
+        const data = await response.json();
+        if (data.success) {
+            showAlert('删除成功', 'success');
+            await loadProjects();
+            renderProjectTree();
+            // 如果当前筛选的是这个项目，清除筛选
+            if (currentFilterProject === projectName) {
+                clearFilters();
+            }
+        } else {
+            showAlert(data.message || '删除失败', 'error');
+        }
+    } catch (error) {
+        showAlert('删除失败', 'error');
+    }
+}
+
+// 显示添加分集表单
+function showAddEpisodeForm(projectName) {
+    const formId = `addEpisodeForm_${projectName.replace(/\s/g, '_')}`;
+    const form = document.getElementById(formId);
+    if (form) {
+        form.style.display = 'flex';
+        form.querySelector('input').focus();
+    }
+}
+
+// 隐藏添加分集表单
+function hideAddEpisodeForm(projectName) {
+    const formId = `addEpisodeForm_${projectName.replace(/\s/g, '_')}`;
+    const form = document.getElementById(formId);
+    if (form) {
+        form.style.display = 'none';
+        form.querySelector('input').value = '';
+    }
+}
+
+// 确认添加分集
+async function confirmAddEpisode(projectName) {
+    const formId = `addEpisodeForm_${projectName.replace(/\s/g, '_')}`;
+    const form = document.getElementById(formId);
+    const input = form.querySelector('input');
+    const episodeName = input.value.trim();
+    
+    if (!episodeName) {
+        showAlert('请输入分集名称', 'error');
+        return;
+    }
+    
+    try {
+        const response = await fetch(`/api/assets/projects/${encodeURIComponent(projectName)}/episodes`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: episodeName })
+        });
+        
+        const data = await response.json();
+        if (data.success) {
+            showAlert('分集添加成功', 'success');
+            await loadProjects();
+            renderProjectTree();
+            // 保持展开状态
+            const projectItem = document.querySelector(`.project-item[data-project="${projectName}"]`);
+            if (projectItem) {
+                projectItem.classList.add('expanded');
+            }
+        } else {
+            showAlert(data.message || '添加失败', 'error');
+        }
+    } catch (error) {
+        showAlert('添加失败', 'error');
+    }
+}
+
+// 开始分集重命名（内联编辑）
+function startEpisodeRename(projectName, episodeName) {
+    event.stopPropagation();
+    const safeId = projectName.replace(/\s/g, '_') + '_' + episodeName.replace(/\s/g, '_');
+    const nameSpan = document.getElementById('episodeName_' + safeId);
+    const nameInput = document.getElementById('episodeNameInput_' + safeId);
+    
+    if (nameSpan && nameInput) {
+        nameSpan.style.display = 'none';
+        nameInput.style.display = 'inline-block';
+        nameInput.value = episodeName;
+        nameInput.focus();
+        nameInput.select();
+    }
+}
+
+// 处理分集重命名按键
+function handleEpisodeRenameKey(event, projectName, episodeName) {
+    if (event.key === 'Enter') {
+        event.preventDefault();
+        event.target.blur();
+    } else if (event.key === 'Escape') {
+        event.preventDefault();
+        cancelEpisodeRename(projectName, episodeName);
+    }
+}
+
+// 取消分集重命名
+function cancelEpisodeRename(projectName, episodeName) {
+    const safeId = projectName.replace(/\s/g, '_') + '_' + episodeName.replace(/\s/g, '_');
+    const nameSpan = document.getElementById('episodeName_' + safeId);
+    const nameInput = document.getElementById('episodeNameInput_' + safeId);
+    
+    if (nameSpan && nameInput) {
+        nameInput.value = episodeName;
+        nameInput.style.display = 'none';
+        nameSpan.style.display = 'inline';
+    }
+}
+
+// 保存分集重命名
+let isEpisodeRenaming = false;
+async function saveEpisodeRename(projectName, episodeName) {
+    if (isEpisodeRenaming) return;
+    
+    const safeId = projectName.replace(/\s/g, '_') + '_' + episodeName.replace(/\s/g, '_');
+    const nameSpan = document.getElementById('episodeName_' + safeId);
+    const nameInput = document.getElementById('episodeNameInput_' + safeId);
+    
+    if (!nameInput) return;
+    
+    const newName = nameInput.value.trim();
+    
+    // 如果名称没变化或为空，取消编辑
+    if (!newName || newName === episodeName) {
+        if (nameSpan) {
+            nameInput.style.display = 'none';
+            nameSpan.style.display = 'inline';
+        }
+        return;
+    }
+    
+    isEpisodeRenaming = true;
+    
+    try {
+        const response = await fetch(`/api/assets/projects/${encodeURIComponent(projectName)}/episodes/${encodeURIComponent(episodeName)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: newName })
+        });
+        
+        const data = await response.json();
+        if (data.success) {
+            showAlert(data.message || '重命名成功', 'success');
+            await loadProjects();
+            renderProjectTree();
+            // 保持展开状态
+            const projectItem = document.querySelector(`.project-item[data-project="${projectName}"]`);
+            if (projectItem) {
+                projectItem.classList.add('expanded');
+            }
+            // 如果当前筛选的是这个分集，更新筛选
+            if (currentFilterEpisode === episodeName) {
+                currentFilterEpisode = newName;
+                document.getElementById('episodeFilter').value = newName;
+            }
+        } else {
+            showAlert(data.message || '重命名失败', 'error');
+            if (nameSpan) {
+                nameInput.style.display = 'none';
+                nameSpan.style.display = 'inline';
+            }
+        }
+    } catch (error) {
+        showAlert('重命名失败', 'error');
+        if (nameSpan) {
+            nameInput.style.display = 'none';
+            nameSpan.style.display = 'inline';
+        }
+    } finally {
+        isEpisodeRenaming = false;
+    }
+}
+
+// 删除分集提示
+async function deleteEpisodePrompt(projectName, episodeName) {
+    if (!confirm(`确定要删除分集“${episodeName}”吗？\n\n删除后，使用该分集的资产将变为未分配分集。`)) return;
+    
+    try {
+        const response = await fetch(`/api/assets/projects/${encodeURIComponent(projectName)}/episodes/${encodeURIComponent(episodeName)}`, {
+            method: 'DELETE'
+        });
+        
+        const data = await response.json();
+        if (data.success) {
+            showAlert('删除成功', 'success');
+            await loadProjects();
+            renderProjectTree();
+            // 保持展开状态
+            const projectItem = document.querySelector(`.project-item[data-project="${projectName}"]`);
+            if (projectItem) {
+                projectItem.classList.add('expanded');
+            }
+            // 如果当前筛选的是这个分集，清除筛选
+            if (currentFilterEpisode === episodeName) {
+                currentFilterEpisode = '';
+                document.getElementById('episodeFilter').value = '';
+                loadAssets();
+            }
+        } else {
+            showAlert(data.message || '删除失败', 'error');
+        }
+    } catch (error) {
+        showAlert('删除失败', 'error');
+    }
+}
+
+// HTML转义
+function escapeHtml(str) {
+    if (!str) return '';
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// 项目筛选变化时的处理
+function onProjectFilterChange() {
+    const select = document.getElementById('projectFilter');
+    currentFilterProject = select.value;
+    currentFilterEpisode = '';  // 重置分集筛选
+    updateEpisodeFilterOptions();
+    currentPage = 1;
+    loadAssets();
+}
+
+// 快捷创建项目
+async function quickCreateProject() {
+    const name = prompt('请输入新项目名称:');
+    if (!name || !name.trim()) return;
+    
+    try {
+        const response = await fetch('/api/assets/projects', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: name.trim() })
+        });
+        
+        const data = await response.json();
+        if (data.success) {
+            showAlert('项目创建成功', 'success');
+            await loadProjects();
+            // 自动选择新创建的项目
+            currentFilterProject = name.trim();
+            document.getElementById('projectFilter').value = name.trim();
+            updateEpisodeFilterOptions();
+            currentPage = 1;
+            loadAssets();
+        } else {
+            showAlert(data.message || '创建失败', 'error');
+        }
+    } catch (error) {
+        showAlert('创建失败', 'error');
+    }
+}
+
+// 初始化
+document.addEventListener('DOMContentLoaded', () => {
+    loadProjects();  // 加载项目列表
+    loadAssets();
+});
+</script>
+{% endblock %}

@@ -1,0 +1,12 @@
+flask==3.0.0
+requests==2.31.0
+python-dotenv==1.0.0
+gunicorn
+gevent
+greenlet>=2.0.0
+zope.event
+zope.interface
+Flask-Limiter==3.5.0
+psutil==5.9.6
+openai>=1.0.0
+dashscope==1.25.5

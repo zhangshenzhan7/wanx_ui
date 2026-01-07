@@ -1,0 +1,1702 @@
+{% extends "base.html" %}
+
+{% block title %}通义万相 - 图生图{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.1/cropper.min.css">
+{% endblock %}
+
+{% block body %}
+<div class="workspace-container">
+    <div class="workspace-header">
+        <h1>🎨 通义万相图生图</h1>
+        <div>
+            <button class="btn btn-secondary" onclick="window.location.href='/assets'" style="margin-right: 10px;">📁 资产库</button>
+            <button class="btn btn-secondary" onclick="window.location.href='/workspace'" style="margin-right: 10px;">图生视频</button>
+            <button class="btn btn-secondary" onclick="window.location.href='/text2video'" style="margin-right: 10px;">文生视频</button>
+            <button class="btn btn-secondary" onclick="window.location.href='/kf2v'" style="margin-right: 10px;">首尾帧生视频</button>
+            <button class="btn btn-secondary" onclick="window.location.href='/reference2video'" style="margin-right: 10px;">参考生视频</button>
+            <button class="btn btn-secondary" onclick="window.location.href='/text2image'" style="margin-right: 10px;">文生图</button>
+            <button class="btn btn-secondary active" style="margin-right: 10px;">图生图</button>
+            <button class="btn btn-secondary" onclick="window.location.href='/voice-clone'" style="margin-right: 10px;">语音复刻</button>
+            <button class="btn btn-secondary" onclick="logout()">退出</button>
+        </div>
+    </div>
+    
+    <div class="workspace-content">
+        <!-- 左侧：创建任务 -->
+        <div class="create-panel">
+            <h2>创建新任务</h2>
+            
+            <div class="form-section">
+                <div class="form-group">
+                    <label>参考图片（必填，最多3张）</label>
+                    <div class="upload-area" id="uploadArea">
+                        <input type="file" id="imageInput" accept="image/*" multiple style="display: none;">
+                        <div class="upload-placeholder" id="uploadPlaceholder">
+                            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                                <polyline points="17 8 12 3 7 8"></polyline>
+                                <line x1="12" y1="3" x2="12" y2="15"></line>
+                            </svg>
+                            <p>点击或拖拽上传参考图片</p>
+                            <small>支持 JPG、PNG、BMP、WEBP 格式，最大 10MB，最多3张</small>
+                        </div>
+                        <div id="imagePreviewContainer" style="display: none; display: flex; gap: 10px; flex-wrap: wrap;"></div>
+                    </div>
+                    <div class="upload-actions" style="margin-top: 8px; text-align: center;">
+                        <button type="button" class="btn btn-secondary btn-sm" onclick="openAssetPicker({ title: '从资产库选择图片', targetType: 'i2i', multiple: true, maxSelect: 3, onSelect: handleI2IAssetSelect })">
+                            📁 从资产库选择
+                        </button>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>提示词（必填）</label>
+                    <textarea id="prompt" rows="6" placeholder="描述您想要的图片变化，例如：参考这个风格的图片，生成番茄炒蛋；或者：将花卉连衣裙换成一件复古风格的蕾丝长裙。图文混排模式例如：给我一个3张图辣椒炒肉教程。"></textarea>
+                    <small style="color: #666; font-size: 12px; margin-top: 4px; display: block;">
+                        <strong>wan2.6-image</strong>：<br/>
+                          · <strong>图像编辑模式</strong>：支持多图输入（最多3张），总像素[768×768, 1280×1280]，宽高比[1:4, 4:1]<br/>
+                          · <strong>图文混排模式</strong>：生成图文混合内容（如教程），最多1张参考图或不使用参考图，生成1-5张图<br/>
+                        <strong>wan2.5-i2i-preview</strong>：支持多图输入和自定义分辨率<br/>
+                        <strong>qwen-image-edit-plus</strong>：仅支持单图输入，保持原图比例
+                    </small>
+                </div>
+
+                <div class="form-group">
+                    <label>反向提示词（可选）</label>
+                    <input type="text" id="negativePrompt" placeholder="不希望出现的内容...">
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>模型选择</label>
+                        <select id="model" onchange="onModelChange()">
+                            <option value="wan2.6-image">wan2.6-image (最新推荐)</option>
+                            <option value="wan2.5-i2i-preview">wan2.5-i2i-preview</option>
+                            <option value="qwen-image-edit-plus">qwen-image-edit-plus</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group" id="sizeGroup">
+                        <label>图片尺寸</label>
+                        <select id="size">
+                            <option value="">默认（保持原图比例）</option>
+                            <option value="1024*1024">1024×1024 (1:1 正方形)</option>
+                            <option value="1280*1280">1280×1280 (1:1 大正方形)</option>
+                            <option value="800*1200">800×1200 (2:3 竖版)</option>
+                            <option value="1200*800">1200×800 (3:2 横版)</option>
+                            <option value="960*1280">960×1280 (3:4 竖版)</option>
+                            <option value="1280*960">1280×960 (4:3 横版)</option>
+                            <option value="720*1280">720×1280 (9:16 竖版)</option>
+                            <option value="1280*720">1280×720 (16:9 横版)</option>
+                            <option value="1344*576">1344×576 (21:9 超宽)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>生成数量</label>
+                    <select id="batchCount">
+                        <option value="1" selected>1张图片</option>
+                        <option value="2">2张图片</option>
+                        <option value="3">3张图片</option>
+                        <option value="4">4张图片（最多）</option>
+                    </select>
+                    <small>一次生成多张图片，可从中挑选最佳效果</small>
+                </div>
+
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="promptExtend" checked>
+                        启用智能改写
+                    </label>
+                    <small style="color: #888; margin-left: 8px;">（仅wan2.6-image图像编辑模式和wan2.5-i2i-preview支持）</small>
+                </div>
+                
+                <!-- wan2.6-image 图文混排模式选项 -->
+                <div class="form-group" id="interleaveGroup" style="display: none;">
+                    <label>
+                        <input type="checkbox" id="enableInterleave">
+                        启用图文混排模式
+                    </label>
+                    <small style="color: #666; display: block; margin-top: 4px;">
+                        图文混排模式：可生成包含图文混合的内容（如教程类图文），最多使用1张参考图或不使用参考图
+                    </small>
+                </div>
+                
+                <div class="form-group" id="maxImagesGroup" style="display: none;">
+                    <label>最多生成图片数（图文混排模式）</label>
+                    <select id="maxImages">
+                        <option value="1">1张图片</option>
+                        <option value="2">2张图片</option>
+                        <option value="3">3张图片</option>
+                        <option value="4">4张图片</option>
+                        <option value="5" selected>5张图片（默认）</option>
+                    </select>
+                    <small style="color: #888;">注意：实际生成数量可能少于设定值，取决于模型推理结果</small>
+                </div>
+                
+                <button class="btn btn-primary btn-large btn-generate" onclick="createI2ITask()" id="createBtn">
+                    <span class="btn-icon">✨</span>
+                    <span class="btn-text">开始生成</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- 右侧：历史记录 -->
+        <div class="history-panel">
+            <div class="history-header">
+                <h2>历史记录</h2>
+                <div class="history-actions">
+                    <button class="btn btn-secondary btn-sm" onclick="toggleBatchMode()" id="batchModeBtn">
+                        批量选择
+                    </button>
+                    <button class="btn btn-primary btn-sm" onclick="downloadSelected()" id="downloadBtn" style="display:none;">
+                        下载选中 (<span id="selectedCount">0</span>)
+                    </button>
+                    <button class="btn btn-secondary btn-sm" onclick="saveSelectedImagesToAssets()" id="saveToAssetBtn" style="display:none;">
+                        📁 保存到资产库
+                    </button>
+                </div>
+            </div>
+            <div class="history-panel-wrapper">
+                <div class="task-list-container">
+                    <div id="taskList" class="task-list">
+                        <div class="loading">加载中...</div>
+                    </div>
+                </div>
+                <!-- 右侧缩略图快速导航 -->
+                <div class="thumbnail-nav" id="thumbnailNav">
+                    <div class="thumbnail-nav-header">快速导航 (<span id="thumbNavCount">0</span>)</div>
+                    <div class="thumbnail-nav-list" id="thumbnailNavList">
+                        <div class="thumbnail-nav-empty">暂无已完成<br>的图片</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 图片放大浮层 -->
+<div class="image-modal" id="imageModal" onclick="closeImageModal()">
+    <div class="image-modal-content" onclick="event.stopPropagation()">
+        <button class="image-modal-close" onclick="closeImageModal()">&times;</button>
+        <img id="modalImage" src="" alt="生成的图片">
+    </div>
+</div>
+
+<!-- 图片裁剪模态框 -->
+<div class="custom-cropper-modal" id="cropperModal">
+    <div class="cropper-modal-content">
+        <div class="cropper-toolbar">
+            <h3>裁剪图片</h3>
+            <div class="aspect-ratio-group">
+                <button class="aspect-ratio-btn" data-ratio="free">自定义</button>
+                <button class="aspect-ratio-btn" data-ratio="16:9">16:9</button>
+                <button class="aspect-ratio-btn" data-ratio="9:16">9:16</button>
+                <button class="aspect-ratio-btn" data-ratio="4:3">4:3</button>
+                <button class="aspect-ratio-btn" data-ratio="3:4">3:4</button>
+                <button class="aspect-ratio-btn" data-ratio="1:1">1:1</button>
+            </div>
+        </div>
+        <div class="cropper-container">
+            <img id="cropperImage" src="" alt="待裁剪图片">
+        </div>
+        <div class="cropper-actions">
+            <button class="btn btn-secondary" id="cropperCancelBtn">取消</button>
+            <button class="btn btn-primary" id="cropperConfirmBtn">确认裁剪</button>
+        </div>
+    </div>
+</div>
+
+<style>
+/* image2image 页面特有样式 */
+
+.custom-cropper-modal {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.85);
+    z-index: 10000;
+    align-items: center;
+    justify-content: center;
+    backdrop-filter: blur(5px);
+}
+
+.custom-cropper-modal.active {
+    display: flex;
+}
+
+.cropper-modal-content {
+    background: #fff;
+    border-radius: 12px;
+    width: 90vw;
+    max-width: 1100px;
+    height: 85vh;
+    max-height: 800px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+}
+
+.cropper-toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 15px 25px;
+    border-bottom: 1px solid #eee;
+    background: #fff;
+    z-index: 10;
+}
+
+.cropper-toolbar h3 {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 600;
+    color: #333;
+}
+
+.cropper-container {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+    background-color: #2b2b2b;
+    background-image:
+        linear-gradient(45deg, #333 25%, transparent 25%),
+        linear-gradient(-45deg, #333 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #333 75%),
+        linear-gradient(-45deg, transparent 75%, #333 75%);
+    background-size: 20px 20px;
+    background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.cropper-container img {
+    max-width: 100%;
+    max-height: 100%;
+    display: block;
+}
+
+.cropper-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 15px;
+    padding: 15px 25px;
+    border-top: 1px solid #eee;
+    background: #fff;
+    z-index: 10;
+}
+
+.aspect-ratio-group {
+    display: flex;
+    gap: 8px;
+    background: #f0f2f5;
+    padding: 4px;
+    border-radius: 8px;
+}
+
+.aspect-ratio-btn {
+    padding: 6px 14px;
+    border: none;
+    background: transparent;
+    color: #666;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    transition: all 0.2s;
+}
+
+.aspect-ratio-btn:hover {
+    background: rgba(0,0,0,0.05);
+    color: #333;
+}
+
+.aspect-ratio-btn.active {
+    background: white;
+    color: #667eea;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+    font-weight: 600;
+}
+
+.cropper-modal {
+    background-color: rgba(0, 0, 0, 0.65) !important;
+    opacity: 1 !important;
+}
+
+.cropper-view-box {
+    outline: 2px solid #667eea !important;
+    outline-offset: 0;
+    box-shadow: 0 0 0 1000px rgba(0, 0, 0, 0.35);
+}
+
+.cropper-dashed {
+    border-color: rgba(255, 255, 255, 0.6) !important;
+}
+
+.cropper-center::before,
+.cropper-center::after {
+    background-color: rgba(255, 255, 255, 0.8) !important;
+}
+
+.cropper-point {
+    width: 12px !important;
+    height: 12px !important;
+    background-color: #667eea !important;
+    border-radius: 50%;
+    opacity: 1 !important;
+    border: 2px solid #fff !important;
+    z-index: 1000 !important;
+}
+
+.cropper-point.point-ne,
+.cropper-point.point-nw,
+.cropper-point.point-se,
+.cropper-point.point-sw {
+    width: 16px !important;
+    height: 16px !important;
+}
+
+.cropper-bg {
+    background: transparent !important;
+}
+
+/* 加载更多按钮样式 */
+.load-more-container {
+    padding: 20px;
+    text-align: center;
+    border-top: 1px solid #eee;
+}
+
+.load-more-container .btn {
+    min-width: 120px;
+}
+
+/* 批量任务下拉式显示样式 */
+.batch-task-dropdown {
+    position: relative;
+}
+
+.batch-dropdown-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    padding: 6px 10px;
+    background: linear-gradient(135deg, #f8f9ff 0%, #f0f2ff 100%);
+    border-radius: 8px;
+    border: 1px solid #e0e4ff;
+    transition: all 0.2s;
+    user-select: none;
+}
+
+.batch-dropdown-toggle:hover {
+    background: linear-gradient(135deg, #f0f2ff 0%, #e8ebff 100%);
+    border-color: #667eea;
+}
+
+.dropdown-arrow {
+    font-size: 10px;
+    color: #667eea;
+    transition: transform 0.2s;
+}
+
+.batch-dropdown-toggle.expanded .dropdown-arrow {
+    transform: rotate(90deg);
+}
+
+.batch-summary {
+    font-weight: 600;
+    color: #333;
+    font-size: 13px;
+}
+
+.batch-status-summary {
+    font-size: 12px;
+    color: #888;
+    margin-left: auto;
+}
+
+.batch-dropdown-content {
+    margin-top: 8px;
+    padding: 8px;
+    background: #fafbff;
+    border-radius: 8px;
+    border: 1px solid #e8ebff;
+}
+
+.batch-task-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    transition: background 0.15s;
+}
+
+.batch-task-row:hover {
+    background: #f0f2ff;
+}
+
+.batch-task-row .task-index {
+    font-size: 11px;
+    font-weight: 600;
+    color: #667eea;
+    min-width: 24px;
+}
+
+.batch-task-row .task-id {
+    font-family: 'Monaco', 'Consolas', monospace;
+    font-size: 11px;
+    color: #555;
+    cursor: pointer;
+    padding: 2px 6px;
+    background: #fff;
+    border: 1px solid #e0e4ff;
+    border-radius: 4px;
+    transition: all 0.2s;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.batch-task-row .task-id:hover {
+    background: #667eea;
+    color: #fff;
+    border-color: #667eea;
+}
+
+.batch-task-row .task-status {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    min-width: 50px;
+    text-align: center;
+}
+
+/* 参考图片样式 */
+.reference-images {
+    margin-top: 10px;
+    padding: 10px;
+    background-color: #f8f9fa;
+    border-radius: 6px;
+}
+
+.reference-image-grid {
+    display: flex;
+    gap: 10px;
+    margin-top: 5px;
+}
+
+.reference-image-thumbnail {
+    width: 80px;
+    height: 80px;
+    border-radius: 4px;
+    overflow: hidden;
+    border: 1px solid #ddd;
+}
+
+.reference-image-thumbnail img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+</style>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.1/cropper.min.js"></script>
+<script src="/static/image-cropper.js"></script>
+<script src="/static/asset-picker.js"></script>
+<script src="/static/thumbnail-nav.js"></script>
+
+<script>
+let currentImageFilenames = [];
+let i2iPollingIntervals = new Map();
+let batchModeEnabled = false;
+let selectedImages = new Set();
+let taskStatusCache = new Map();
+let currentPage = 1;
+let hasMoreTasks = true;
+let isLoadingMore = false;
+const TASKS_PER_PAGE = 50;  // 增加每页加载数量，确保能看到更多历史记录
+let loadedTaskIds = new Set();
+
+// 模型切换时更新尺寸选项
+function onModelChange() {
+    const model = document.getElementById('model').value;
+    const sizeSelect = document.getElementById('size');
+    const interleaveGroup = document.getElementById('interleaveGroup');
+    const maxImagesGroup = document.getElementById('maxImagesGroup');
+    const enableInterleave = document.getElementById('enableInterleave');
+    
+    if (model === 'qwen-image-edit-plus') {
+        // qwen-image-edit-plus 只支持默认选项
+        sizeSelect.innerHTML = '<option value="">默认（保持原图比例）</option>';
+        interleaveGroup.style.display = 'none';
+        maxImagesGroup.style.display = 'none';
+    } else if (model === 'wan2.6-image') {
+        // wan2.6-image 支持自定义尺寸，总像素在[768*768, 1280*1280]之间，宽高比[1:4, 4:1]
+        sizeSelect.innerHTML = `
+            <option value="">默认（根据输入图自动计算）</option>
+            <option value="1024*1024">1024×1024 (1:1 正方形)</option>
+            <option value="1280*1280">1280×1280 (1:1 大正方形)</option>
+            <option value="800*1200">800×1200 (2:3 竖版)</option>
+            <option value="1200*800">1200×800 (3:2 横版)</option>
+            <option value="960*1280">960×1280 (3:4 竖版)</option>
+            <option value="1280*960">1280×960 (4:3 横版)</option>
+            <option value="720*1280">720×1280 (9:16 竖版)</option>
+            <option value="1280*720">1280×720 (16:9 横版)</option>
+            <option value="1344*576">1344×576 (21:9 超宽)</option>
+        `;
+        // 显示图文混排模式选项
+        interleaveGroup.style.display = 'block';
+        // 根据当前checkbox状态显示/隐藏max_images选项
+        if (enableInterleave.checked) {
+            maxImagesGroup.style.display = 'block';
+        }
+    } else {
+        // wan2.5-i2i-preview 支持所有尺寸选项
+        sizeSelect.innerHTML = `
+            <option value="">默认（保持原图比例）</option>
+            <option value="1024*1024">1024×1024 (1:1 正方形)</option>
+            <option value="1280*1280">1280×1280 (1:1 大正方形)</option>
+            <option value="800*1200">800×1200 (2:3 竖版)</option>
+            <option value="1200*800">1200×800 (3:2 横版)</option>
+            <option value="960*1280">960×1280 (3:4 竖版)</option>
+            <option value="1280*960">1280×960 (4:3 横版)</option>
+            <option value="720*1280">720×1280 (9:16 竖版)</option>
+            <option value="1280*720">1280×720 (16:9 横版)</option>
+            <option value="1344*576">1344×576 (21:9 超宽)</option>
+        `;
+        interleaveGroup.style.display = 'none';
+        maxImagesGroup.style.display = 'none';
+    }
+}
+
+// 图文混排模式切换
+document.addEventListener('DOMContentLoaded', function() {
+    const enableInterleave = document.getElementById('enableInterleave');
+    const maxImagesGroup = document.getElementById('maxImagesGroup');
+    const uploadPlaceholder = document.getElementById('uploadPlaceholder');
+    
+    if (enableInterleave) {
+        enableInterleave.addEventListener('change', function() {
+            if (this.checked) {
+                maxImagesGroup.style.display = 'block';
+                
+                // 更新上传提示文本
+                const uploadText = uploadPlaceholder.querySelector('p');
+                const uploadHint = uploadPlaceholder.querySelector('small');
+                if (uploadText) uploadText.textContent = '点击或拖拽上传参考图片（可选）';
+                if (uploadHint) uploadHint.textContent = '图文混排模式：最多1张图片或不使用图片，支持 JPG、PNG、BMP、WEBP 格式，最大 10MB';
+                
+                // 图文混排模式：检查参考图片数量，最多只能有1张
+                if (currentImageFilenames.length > 1) {
+                    showAlert('图文混排模式最多只能使用1张参考图片，已自动保留第一张', 'warning');
+                    // 只保留第一张图片
+                    const firstImage = currentImageFilenames[0];
+                    currentImageFilenames = [firstImage];
+                    
+                    // 更新UI：移除多余的图片预览
+                    const previewContainer = document.getElementById('imagePreviewContainer');
+                    const previewItems = previewContainer.querySelectorAll('.image-preview-item');
+                    previewItems.forEach((item, index) => {
+                        if (index > 0) {
+                            item.remove();
+                        }
+                    });
+                }
+            } else {
+                maxImagesGroup.style.display = 'none';
+                
+                // 恢复默认上传提示文本
+                const uploadText = uploadPlaceholder.querySelector('p');
+                const uploadHint = uploadPlaceholder.querySelector('small');
+                if (uploadText) uploadText.textContent = '点击或拖拽上传参考图片';
+                if (uploadHint) uploadHint.textContent = '支持 JPG、PNG、BMP、WEBP 格式，最大 10MB，最多3张';
+            }
+        });
+    }
+});
+
+// 资产库选择回调 - 图生图
+function handleI2IAssetSelect(results) {
+    // results 可能是数组(多选)或单个对象(单选)
+    const items = Array.isArray(results) ? results : [results];
+    
+    const model = document.getElementById('model').value;
+    const enableInterleave = document.getElementById('enableInterleave');
+    
+    // 图文混排模式：最多1张图片
+    if (model === 'wan2.6-image' && enableInterleave && enableInterleave.checked) {
+        const maxAllowed = 1;
+        if (currentImageFilenames.length + items.length > maxAllowed) {
+            showAlert('图文混排模式最多只能使用1张参考图片', 'error');
+            return;
+        }
+    } else {
+        // 其他模式：最多3张图片
+        if (currentImageFilenames.length + items.length > 3) {
+            showAlert('最多只能上传3张图片', 'error');
+            return;
+        }
+    }
+    
+    const previewContainer = document.getElementById('imagePreviewContainer');
+    const uploadPlaceholder = document.getElementById('uploadPlaceholder');
+    
+    items.forEach(item => {
+        if (item && item.filename && item.url) {
+            currentImageFilenames.push(item.filename);
+            
+            // 创建预览元素
+            const wrapper = document.createElement('div');
+            wrapper.className = 'preview-image-wrapper';
+            wrapper.style.cssText = 'position: relative; display: inline-block;';
+            wrapper.innerHTML = `
+                <img src="${item.url}" class="preview-image" style="width: 80px; height: 80px; object-fit: cover; border-radius: 4px;">
+                <button type="button" class="remove-image-btn" style="position: absolute; top: -8px; right: -8px; width: 20px; height: 20px; border-radius: 50%; background: #dc3545; color: white; border: none; cursor: pointer; font-size: 12px; line-height: 1;" onclick="removeImage('${item.filename}', this.parentElement)">×</button>
+            `;
+            previewContainer.appendChild(wrapper);
+        }
+    });
+    
+    if (currentImageFilenames.length > 0) {
+        previewContainer.style.display = 'flex';
+        uploadPlaceholder.style.display = 'none';
+    }
+    
+    showAlert(`已选择 ${items.length} 张图片`, 'success');
+}
+
+window.addEventListener('load', function() {
+    initInfiniteScroll();
+    loadI2ITasks();
+    onModelChange(); // 初始化模型相关的UI显示
+    
+    // 初始化缩略图导航
+    ThumbnailNav.init({
+        apiEndpoint: '/api/i2i-thumbnails',
+        mediaType: 'image',
+        itemsPerPage: 50,
+        enableBatchSupport: true,
+        emptyText: '暂无已完成<br>的图片',
+        virtualScrollEnabled: false  // 图片模块使用传统渲染
+    });
+});
+
+function initInfiniteScroll() {
+    const taskList = document.getElementById('taskList');
+
+    if (taskList) {
+        taskList.addEventListener('scroll', function() {
+            const scrollTop = taskList.scrollTop;
+            const scrollHeight = taskList.scrollHeight;
+            const clientHeight = taskList.clientHeight;
+            const distanceToBottom = scrollHeight - scrollTop - clientHeight;
+
+            // 滚动到底部附近时自动加载
+            if (distanceToBottom < 300 && hasMoreTasks && !isLoadingMore) {
+                console.log('[DEBUG] 触发加载更多 I2I，距离底部:', distanceToBottom);
+                loadMoreI2ITasks();
+            }
+        });
+        
+        console.log('[DEBUG] I2I 无限滚动已初始化');
+        
+        // 页面加载后检查是否需要加载更多（内容不足以滚动时）
+        setTimeout(() => {
+            if (taskList.scrollHeight <= taskList.clientHeight && hasMoreTasks) {
+                console.log('[DEBUG] 内容不足以滚动，自动加载更多');
+                loadMoreI2ITasks();
+            }
+        }, 500);
+    }
+}
+
+async function loadMoreI2ITasks() {
+    if (isLoadingMore || !hasMoreTasks) {
+        console.log('[DEBUG] 跳过加载更多:', { isLoadingMore, hasMoreTasks });
+        return;
+    }
+
+    isLoadingMore = true;
+    currentPage++;
+    
+    // 更新按钮状态
+    const loadMoreBtn = document.getElementById('loadMoreBtn');
+    if (loadMoreBtn) {
+        loadMoreBtn.disabled = true;
+        loadMoreBtn.textContent = '加载中...';
+    }
+
+    try {
+        const response = await fetch(`/api/i2i-tasks?page=${currentPage}&limit=${TASKS_PER_PAGE}`);
+        const data = await response.json();
+        
+        console.log('[DEBUG] 加载更多任务:', {
+            page: currentPage,
+            tasks_count: data.tasks ? data.tasks.length : 0,
+            has_more: data.has_more
+        });
+
+        if (data.success && data.tasks.length > 0) {
+            appendI2ITasks(data.tasks);
+            hasMoreTasks = data.has_more;
+
+            data.tasks.forEach(task => {
+                if (task.task_status === 'PENDING' || task.task_status === 'RUNNING') {
+                    startI2IPolling(task.task_id);
+                }
+            });
+        } else {
+            hasMoreTasks = false;
+        }
+        
+        updateLoadMoreButton();
+    } catch (error) {
+        console.error('加载更多任务失败:', error);
+        currentPage--;
+    } finally {
+        isLoadingMore = false;
+        if (loadMoreBtn) {
+            loadMoreBtn.disabled = false;
+            loadMoreBtn.textContent = '加载更多';
+        }
+    }
+}
+
+function updateLoadMoreButton() {
+    const loadMoreContainer = document.getElementById('loadMoreContainer');
+    if (loadMoreContainer) {
+        if (hasMoreTasks) {
+            loadMoreContainer.style.display = 'block';
+        } else {
+            loadMoreContainer.style.display = 'none';
+        }
+    }
+}
+
+const uploadArea = document.getElementById('uploadArea');
+const imageInput = document.getElementById('imageInput');
+const imagePreview = document.getElementById('imagePreview');
+const uploadPlaceholder = document.getElementById('uploadPlaceholder');
+
+uploadArea.addEventListener('click', () => imageInput.click());
+
+uploadArea.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    uploadArea.classList.add('dragover');
+});
+
+uploadArea.addEventListener('dragleave', () => {
+    uploadArea.classList.remove('dragover');
+});
+
+uploadArea.addEventListener('drop', (e) => {
+    e.preventDefault();
+    uploadArea.classList.remove('dragover');
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) {
+        handleMultipleFiles(files);
+    }
+});
+
+imageInput.addEventListener('change', (e) => {
+    const files = Array.from(e.target.files);
+    if (files.length > 0) {
+        handleMultipleFiles(files);
+    }
+});
+
+function handleMultipleFiles(files) {
+    const model = document.getElementById('model').value;
+    const enableInterleave = document.getElementById('enableInterleave');
+    
+    // 图文混排模式：最多只能有1张图片
+    if (model === 'wan2.6-image' && enableInterleave && enableInterleave.checked) {
+        const maxAllowed = 1;
+        if (currentImageFilenames.length + files.length > maxAllowed) {
+            showAlert('图文混排模式最多只能使用1张参考图片', 'error');
+            return;
+        }
+    } else {
+        // 其他模式：最多3张图片
+        if (currentImageFilenames.length + files.length > 3) {
+            showAlert('最多只能上传3张图片', 'error');
+            return;
+        }
+    }
+
+    files.forEach(file => {
+        window.imageCropper.open(file, handleImageUpload);
+    });
+}
+
+async function handleImageUpload(file) {
+    const formData = new FormData();
+    formData.append('image', file);
+
+    try {
+        // 图生图专用上传接口
+        const response = await fetch('/api/upload-i2i-image', {
+            method: 'POST',
+            body: formData
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+            currentImageFilenames.push(data.filename);
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                updateImagePreview(e.target.result, data.filename);
+            };
+            reader.readAsDataURL(file);
+
+            showAlert(`图片上传成功 (${currentImageFilenames.length}/3)`, 'success');
+        } else {
+            showAlert(data.message || '上传失败', 'error');
+        }
+    } catch (error) {
+        showAlert('上传失败：' + error.message, 'error');
+    }
+}
+
+function updateImagePreview(src, filename) {
+    const uploadPlaceholder = document.getElementById('uploadPlaceholder');
+    const previewContainer = document.getElementById('imagePreviewContainer');
+
+    uploadPlaceholder.style.display = 'none';
+    previewContainer.style.display = 'flex';
+
+    const previewItem = document.createElement('div');
+    previewItem.className = 'image-preview-item';
+    previewItem.style.cssText = 'position: relative; width: 150px; height: 150px;';
+
+    const img = document.createElement('img');
+    img.src = src;
+    img.style.cssText = 'width: 100%; height: 100%; object-fit: cover; border-radius: 8px;';
+
+    const removeBtn = document.createElement('button');
+    removeBtn.innerHTML = '×';
+    removeBtn.className = 'btn btn-danger';
+    removeBtn.style.cssText = 'position: absolute; top: 5px; right: 5px; width: 24px; height: 24px; padding: 0; border-radius: 50%; font-size: 18px; line-height: 1;';
+    removeBtn.onclick = () => removeImage(filename, previewItem);
+
+    previewItem.appendChild(img);
+    previewItem.appendChild(removeBtn);
+    previewContainer.appendChild(previewItem);
+}
+
+function removeImage(filename, previewItem) {
+    const index = currentImageFilenames.indexOf(filename);
+    if (index > -1) {
+        currentImageFilenames.splice(index, 1);
+    }
+
+    previewItem.remove();
+
+    const previewContainer = document.getElementById('imagePreviewContainer');
+    const uploadPlaceholder = document.getElementById('uploadPlaceholder');
+
+    if (currentImageFilenames.length === 0) {
+        previewContainer.style.display = 'none';
+        uploadPlaceholder.style.display = 'block';
+    }
+
+    showAlert('图片已移除', 'info');
+}
+
+async function createI2ITask() {
+    const model = document.getElementById('model').value;
+    const enableInterleave = document.getElementById('enableInterleave');
+    
+    // 图文混排模式允许不传图片
+    if (model === 'wan2.6-image' && enableInterleave && enableInterleave.checked) {
+        // 图文混排模式：允许不传图片，但必须有提示词
+    } else {
+        // 其他模式：必须传图片
+        if (currentImageFilenames.length === 0) {
+            showAlert('请先上传参考图片', 'error');
+            return;
+        }
+    }
+
+    const prompt = document.getElementById('prompt').value.trim();
+    if (!prompt) {
+        showAlert('请输入提示词', 'error');
+        return;
+    }
+
+    const sizeValue = document.getElementById('size').value;
+    
+    const requestBody = {
+        image_filenames: currentImageFilenames,
+        prompt: prompt,
+        model: model,
+        batch_count: parseInt(document.getElementById('batchCount').value),
+        prompt_extend: document.getElementById('promptExtend').checked,
+        negative_prompt: document.getElementById('negativePrompt').value
+    };
+    
+    // wan2.6-image 图文混排模式参数
+    if (model === 'wan2.6-image' && enableInterleave && enableInterleave.checked) {
+        requestBody.enable_interleave = true;
+        requestBody.max_images = parseInt(document.getElementById('maxImages').value);
+    }
+    
+    // 只有选择了具体尺寸时才传递 size 参数
+    if (sizeValue) {
+        requestBody.size = sizeValue;
+    }
+    
+    const btn = document.getElementById('createBtn');
+    const btnIcon = btn.querySelector('.btn-icon');
+    const btnText = btn.querySelector('.btn-text');
+    
+    btn.disabled = true;
+    btnIcon.textContent = '⏳';
+    btnText.textContent = '创建中...';
+    
+    try {
+        const response = await fetch('/api/create-i2i-task', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(requestBody)
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            showAlert(data.message || '任务创建成功', 'success');
+            loadI2ITasks();
+            
+            // 只对未完成的任务启动轮询（同步任务已经是SUCCEEDED，无需轮询）
+            if (data.tasks) {
+                data.tasks.forEach(task => {
+                    if (task.task_status !== 'SUCCEEDED' && task.task_status !== 'FAILED') {
+                        startI2IPolling(task.task_id);
+                    }
+                });
+            }
+        } else {
+            showAlert(data.message, 'error');
+        }
+    } catch (error) {
+        showAlert('创建失败：' + error.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btnIcon.textContent = '✨';
+        btnText.textContent = '开始生成';    
+    }
+}
+
+async function loadI2ITasks(reset = true) {
+    try {
+        if (reset) {
+            currentPage = 1;
+            hasMoreTasks = true;
+            loadedTaskIds.clear();
+        }
+        
+        const response = await fetch(`/api/i2i-tasks?page=${currentPage}&limit=${TASKS_PER_PAGE}`);
+        const data = await response.json();
+        
+        console.log('[DEBUG] 加载图生图任务:', {
+            page: currentPage,
+            limit: TASKS_PER_PAGE,
+            total: data.total,
+            tasks_count: data.tasks ? data.tasks.length : 0,
+            has_more: data.has_more
+        });
+        
+        if (data.success) {
+            if (reset) {
+                renderI2ITasks(data.tasks);
+            } else {
+                appendI2ITasks(data.tasks);
+            }
+            
+            hasMoreTasks = data.has_more;
+            
+            // 更新"加载更多"按钮显示状态
+            updateLoadMoreButton();
+            
+            data.tasks.forEach(task => {
+                if (task.task_status === 'PENDING' || task.task_status === 'RUNNING') {
+                    startI2IPolling(task.task_id);
+                }
+            });
+        }
+    } catch (error) {
+        console.error('加载任务失败:', error);
+    }
+}
+
+function renderI2ITasks(tasks) {
+    const taskList = document.getElementById('taskList');
+    
+    console.log('[DEBUG] 渲染图生图任务:', {
+        tasks_count: tasks.length,
+        task_ids: tasks.map(t => t.task_id)
+    });
+    
+    if (tasks.length === 0) {
+        taskList.innerHTML = '<div class="loading">暂无历史记录</div>';
+        return;
+    }
+    
+    tasks.forEach(t => loadedTaskIds.add(t.task_id));
+    const batchGroups = groupI2ITasksByBatch(tasks);
+    
+    console.log('[DEBUG] 批次分组结果:', {
+        groups_count: Object.keys(batchGroups).length,
+        batch_ids: Object.keys(batchGroups)
+    });
+    
+    taskList.innerHTML = renderI2ITaskGroups(batchGroups);
+}
+
+function appendI2ITasks(tasks) {
+    const taskList = document.getElementById('taskList');
+    const newTasks = tasks.filter(t => !loadedTaskIds.has(t.task_id));
+    if (newTasks.length === 0) return;
+    
+    newTasks.forEach(t => loadedTaskIds.add(t.task_id));
+    
+    // 检查是否有需要合并到现有批次的任务
+    const tasksToMerge = [];
+    const tasksToAppend = [];
+    
+    newTasks.forEach(task => {
+        const batchId = task.batch_id;
+        if (batchId) {
+            // 查找是否已存在同一批次的任务容器
+            const existingBatchContainer = findExistingBatchContainer(batchId);
+            if (existingBatchContainer) {
+                tasksToMerge.push({ task, container: existingBatchContainer, batchId });
+            } else {
+                tasksToAppend.push(task);
+            }
+        } else {
+            tasksToAppend.push(task);
+        }
+    });
+    
+    // 合并到现有批次
+    if (tasksToMerge.length > 0) {
+        console.log('[DEBUG] 发现需要合并的批次任务:', tasksToMerge.map(t => t.task.task_id));
+        tasksToMerge.forEach(({ task, container, batchId }) => {
+            mergeTaskIntoBatch(task, container, batchId);
+        });
+    }
+    
+    // 追加新的独立任务或批次
+    if (tasksToAppend.length > 0) {
+        const batchGroups = groupI2ITasksByBatch(tasksToAppend);
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = renderI2ITaskGroups(batchGroups);
+        
+        while (tempDiv.firstChild) {
+            taskList.appendChild(tempDiv.firstChild);
+        }
+    }
+}
+
+// 查找现有的批次容器
+function findExistingBatchContainer(batchId) {
+    const taskItems = document.querySelectorAll('.task-item');
+    for (const item of taskItems) {
+        const batchTaskIds = item.querySelector('.batch-task-ids');
+        if (batchTaskIds) {
+            // 检查容器中是否有相同batch_id的任务
+            const taskRows = batchTaskIds.querySelectorAll('.batch-task-row');
+            for (const row of taskRows) {
+                const taskId = row.querySelector('.task-id')?.textContent?.trim();
+                if (taskId && loadedTaskIds.has(taskId)) {
+                    // 从缓存或全局数据中获取该任务的batch_id
+                    // 简化方案：通过data属性标记
+                    if (item.dataset.batchId === batchId) {
+                        return item;
+                    }
+                }
+            }
+        }
+    }
+    return null;
+}
+
+// 合并任务到现有批次
+function mergeTaskIntoBatch(task, container, batchId) {
+    console.log('[DEBUG] 合并任务到批次:', { taskId: task.task_id, batchId });
+    
+    // 1. 添加任务ID行到batch-task-ids
+    const batchTaskIds = container.querySelector('.batch-task-ids');
+    if (batchTaskIds) {
+        const taskRow = document.createElement('div');
+        taskRow.className = 'batch-task-row';
+        const taskIndex = batchTaskIds.querySelectorAll('.batch-task-row').length + 1;
+        taskRow.innerHTML = `
+            <span class="task-index">#${taskIndex}</span>
+            <span class="task-id" onclick="copyToClipboard('${task.request_id || task.task_id}')" title="点击复制">${task.request_id || task.task_id}</span>
+            <span class="task-status status-${(task.task_status || 'PENDING').toLowerCase()}">${getStatusText(task.task_status || 'PENDING')}</span>
+        `;
+        batchTaskIds.appendChild(taskRow);
+    }
+    
+    // 2. 如果任务已完成，添加图片到image-grid
+    if (task.task_status === 'SUCCEEDED') {
+        const urls = task.local_image_urls || task.image_urls;
+        if (urls && Array.isArray(urls) && urls.length > 0) {
+            let imageGrid = container.querySelector('.image-grid');
+            if (!imageGrid) {
+                // 如果没有image-grid，创建一个
+                imageGrid = document.createElement('div');
+                imageGrid.className = 'image-grid';
+                container.appendChild(imageGrid);
+            }
+            
+            // 计算当前已有的图片数量
+            const currentImageCount = imageGrid.querySelectorAll('.image-thumbnail').length;
+            
+            urls.forEach((url, index) => {
+                const imageId = `${task.task_id}_${index}`;
+                const globalIndex = currentImageCount + index + 1;
+                const clickHandler = batchModeEnabled ? `toggleImageSelection('${imageId}')` : `openImageModal('${url}')`;
+                const thumbnailClass = batchModeEnabled ? 'image-thumbnail batch-mode' : 'image-thumbnail';
+                
+                const imgDiv = document.createElement('div');
+                imgDiv.className = thumbnailClass;
+                imgDiv.id = `image-${imageId}`;
+                imgDiv.setAttribute('onclick', clickHandler);
+                imgDiv.innerHTML = `
+                    ${batchModeEnabled ? `
+                        <input type="checkbox" 
+                               class="batch-checkbox" 
+                               data-image-id="${imageId}" 
+                               data-image-url="${url}"
+                               onclick="event.stopPropagation(); toggleImageCheckbox('${imageId}');">
+                    ` : ''}
+                    <div class="image-index">#${globalIndex}</div>
+                    <img src="${url}" alt="生成的图片" loading="lazy" onerror="handleImageError(this, '${url}')">
+                `;
+                imageGrid.appendChild(imgDiv);
+            });
+        }
+    }
+}
+
+function groupI2ITasksByBatch(tasks) {
+    const batchGroups = {};
+    tasks.forEach(task => {
+        const batchId = task.batch_id || task.task_id;
+        if (!batchGroups[batchId]) {
+            batchGroups[batchId] = [];
+        }
+        batchGroups[batchId].push(task);
+    });
+    return batchGroups;
+}
+
+function renderI2ITaskGroups(batchGroups) {
+    return Object.values(batchGroups).map(batch => {
+        const mainTask = batch[0];
+        const isBatch = batch.length > 1;
+        const batchId = mainTask.batch_id || mainTask.task_id;
+        
+        const allImageUrls = [];
+        batch.forEach(task => {
+            if (task.task_status === 'SUCCEEDED') {
+                // 优先使用本地图片URL，如果没有则使用远程URL
+                const urls = task.local_image_urls || task.image_urls;
+                if (urls && Array.isArray(urls) && urls.length > 0) {
+                    urls.forEach(url => {
+                        allImageUrls.push({
+                            url: url,
+                            taskIndex: batch.indexOf(task),
+                            taskId: task.task_id
+                        });
+                    });
+                } else if (task.results && Array.isArray(task.results)) {
+                    task.results.forEach(result => {
+                        if (result.url) {
+                            allImageUrls.push({
+                                url: result.url,
+                                taskIndex: batch.indexOf(task),
+                                taskId: task.task_id
+                            });
+                        }
+                    });
+                }
+            }
+        });
+        
+        return `
+        <div class="task-item" id="task-${mainTask.task_id}" data-batch-id="${batchId}">
+            <div class="task-header">
+                <div class="batch-task-ids">
+                    ${batch.map((task, idx) => `
+                        <div class="batch-task-row">
+                            <span class="task-index">#${idx + 1}</span>
+                            <span class="task-id" onclick="copyToClipboard('${task.request_id || task.task_id}')" title="点击复制">${task.request_id || task.task_id}</span>
+                            <span class="task-status status-${(task.task_status || 'PENDING').toLowerCase()}">${getStatusText(task.task_status || 'PENDING')}</span>
+                        </div>
+                    `).join('')}
+                </div>
+                <div class="task-actions">
+                    <button class="btn btn-secondary btn-sm icon-only" onclick="event.stopPropagation(); regenerateI2ITask('${mainTask.task_id}')" title="使用相同配置重新生成">🔄</button>
+                </div>
+            </div>
+            
+            <div class="task-info">
+                <p><strong>提示词:</strong> ${mainTask.prompt}</p>
+                <p><strong>模型:</strong> ${mainTask.model}</p>
+                <p><strong>尺寸:</strong> ${mainTask.size}</p>
+                ${mainTask.created_at ? `<p><strong>创建时间:</strong> ${new Date(mainTask.created_at).toLocaleString('zh-CN')}</p>` : ''}
+                ${mainTask.task_status === 'FAILED' && mainTask.message ? 
+                    `<div class="error-message">⚠ 错误信息: ${mainTask.message}</div>` : ''}
+            </div>
+            
+            ${mainTask.reference_image_urls && mainTask.reference_image_urls.length > 0 ? `
+            <div class="reference-images">
+                <p><strong>参考图片:</strong></p>
+                <div class="reference-image-grid">
+                    ${mainTask.reference_image_urls.map(url => `
+                        <div class="reference-image-thumbnail">
+                            <img src="${url}" alt="参考图片" loading="lazy" onerror="this.style.display='none'">
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+            ` : ''}
+            
+            ${allImageUrls.length > 0 ? `
+                <div class="image-grid">
+                    ${allImageUrls.map((imgData, index) => {
+                        const imageId = `${imgData.taskId}_${index}`;
+                        const clickHandler = batchModeEnabled ? `toggleImageSelection('${imageId}')` : `openImageModal('${imgData.url}')`;
+                        const thumbnailClass = batchModeEnabled ? 'image-thumbnail batch-mode' : 'image-thumbnail';
+                        const isChecked = selectedImages.has(imageId) ? 'checked' : '';
+                        
+                        return `
+                            <div class="${thumbnailClass}" id="image-${imageId}" onclick="${clickHandler}">
+                                ${batchModeEnabled ? `
+                                    <input type="checkbox" 
+                                           class="batch-checkbox" 
+                                           data-image-id="${imageId}" 
+                                           data-image-url="${imgData.url}"
+                                           ${isChecked}
+                                           onclick="event.stopPropagation(); toggleImageCheckbox('${imageId}');">
+                                ` : ''}
+                                ${allImageUrls.length > 1 ? `<div class="image-index">#${index + 1}</div>` : ''}
+                                <img src="${imgData.url}" alt="生成的图片" loading="lazy" onerror="handleImageError(this, '${imgData.url}')">
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            ` : mainTask.task_status === 'SUCCEEDED' ? `
+                <div class="loading">图片生成中，请稍候...</div>
+            ` : ''}
+        </div>
+        `;
+    }).join('');
+}
+
+function toggleBatchDropdown(toggleElement) {
+    const dropdown = toggleElement.parentElement;
+    const content = dropdown.querySelector('.batch-dropdown-content');
+    const isExpanded = toggleElement.classList.contains('expanded');
+    
+    if (isExpanded) {
+        toggleElement.classList.remove('expanded');
+        content.style.display = 'none';
+    } else {
+        toggleElement.classList.add('expanded');
+        content.style.display = 'block';
+    }
+}
+
+// 获取任务的显示ID，qwen-image-edit优先显示request_id
+function getDisplayId(task) {
+    if (task.model === 'qwen-image-edit-plus' && task.request_id) {
+        return task.request_id;
+    }
+    return task.task_id;
+}
+
+function getStatusText(status) {
+    const statusMap = {
+        'PENDING': '等待中',
+        'RUNNING': '处理中',
+        'SUCCEEDED': '成功',
+        'FAILED': '失败'
+    };
+    return statusMap[status] || status;
+}
+
+function startI2IPolling(taskId) {
+    if (i2iPollingIntervals.has(taskId)) {
+        return;
+    }
+    
+    let consecutiveFailures = 0;  // 连续失败计数
+    const MAX_FAILURES = 3;  // 最大连续失败次数
+    
+    const intervalId = setInterval(async () => {
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 8000);  // 8秒超时
+            
+            const response = await fetch(`/api/i2i-task/${taskId}`, {
+                signal: controller.signal
+            });
+            clearTimeout(timeoutId);
+            
+            const data = await response.json();
+            
+            if (data.success && data.task) {
+                consecutiveFailures = 0;  // 成功后重置失败计数
+                const task = data.task;
+                const status = task.task_status;
+                const oldStatus = taskStatusCache.get(taskId);
+                
+                if (oldStatus !== status) {
+                    taskStatusCache.set(taskId, status);
+                    updateI2ITaskStatus(taskId, task);
+                }
+                
+                if (status === 'SUCCEEDED' || status === 'FAILED') {
+                    clearInterval(intervalId);
+                    i2iPollingIntervals.delete(taskId);
+                    loadI2ITasks();
+                }
+            } else {
+                consecutiveFailures++;
+                if (consecutiveFailures >= MAX_FAILURES) {
+                    console.error(`任务 ${taskId} 连续查询失败 ${MAX_FAILURES} 次，停止轮询`);
+                    clearInterval(intervalId);
+                    i2iPollingIntervals.delete(taskId);
+                    
+                    // 在UI上标记为查询失败
+                    const taskElement = document.getElementById(`task-${taskId}`);
+                    if (taskElement) {
+                        const statusSpan = taskElement.querySelector('.task-status');
+                        if (statusSpan) {
+                            statusSpan.className = 'task-status status-failed';
+                            statusSpan.textContent = '查询失败';
+                        }
+                    }
+                }
+            }
+        } catch (error) {
+            if (error.name === 'AbortError') {
+                console.error('查询任务超时:', taskId);
+            } else {
+                console.error('轮询任务失败:', error);
+            }
+            
+            consecutiveFailures++;
+            if (consecutiveFailures >= MAX_FAILURES) {
+                console.error(`任务 ${taskId} 连续查询失败 ${MAX_FAILURES} 次，停止轮询`);
+                clearInterval(intervalId);
+                i2iPollingIntervals.delete(taskId);
+                
+                // 在UI上标记为查询失败
+                const taskElement = document.getElementById(`task-${taskId}`);
+                if (taskElement) {
+                    const statusSpan = taskElement.querySelector('.task-status');
+                    if (statusSpan) {
+                        statusSpan.className = 'task-status status-failed';
+                        statusSpan.textContent = '查询失败';
+                    }
+                }
+            }
+        }
+    }, 5000);
+    
+    i2iPollingIntervals.set(taskId, intervalId);
+}
+
+function updateI2ITaskStatus(taskId, task) {
+    const taskItem = document.getElementById(`task-${taskId}`);
+    if (!taskItem) return;
+    
+    const statusSpan = taskItem.querySelector('.task-status');
+    if (statusSpan) {
+        statusSpan.className = 'task-status';
+        statusSpan.classList.add(`status-${(task.task_status || 'unknown').toLowerCase()}`);
+        statusSpan.textContent = getStatusText(task.task_status);
+    }
+    
+    if (task.task_status === 'FAILED' && task.message) {
+        const taskInfo = taskItem.querySelector('.task-info');
+        if (taskInfo && !taskInfo.querySelector('.error-message')) {
+            const errorDiv = document.createElement('div');
+            errorDiv.className = 'error-message';
+            errorDiv.innerHTML = `⚠ 错误信息: ${task.message}`;
+            taskInfo.appendChild(errorDiv);
+        }
+    }
+    
+    if (task.task_status === 'SUCCEEDED') {
+        // 优先使用本地图片URL
+        const imageUrls = task.local_image_urls || task.image_urls;
+        if (imageUrls && imageUrls.length > 0) {
+        const loadingDiv = taskItem.querySelector('.loading');
+        if (loadingDiv) {
+            loadingDiv.remove();
+        }
+        
+        let imageGrid = taskItem.querySelector('.image-grid');
+        if (!imageGrid) {
+            imageGrid = document.createElement('div');
+            imageGrid.className = 'image-grid';
+            taskItem.appendChild(imageGrid);
+            
+            imageUrls.forEach((url, index) => {
+                const thumbnail = document.createElement('div');
+                thumbnail.className = 'image-thumbnail';
+                thumbnail.onclick = () => openImageModal(url);
+                
+                if (imageUrls.length > 1) {
+                    const indexDiv = document.createElement('div');
+                    indexDiv.className = 'image-index';
+                    indexDiv.textContent = `#${index + 1}`;
+                    thumbnail.appendChild(indexDiv);
+                }
+                
+                const img = document.createElement('img');
+                img.src = url;
+                img.alt = '生成的图片';
+                img.onerror = () => handleImageError(img, url);
+                thumbnail.appendChild(img);
+                
+                imageGrid.appendChild(thumbnail);
+            });
+        }
+        }
+    }
+}
+
+// 使用common.js中的通用函数:
+// - copyToClipboard(text)
+// - openImageModal(imageUrl)
+// - closeImageModal()
+// - handleImageError(imgElement, url)
+// - logout()
+// - showAlert(message, type)
+
+// 批量选择相关函数
+function toggleBatchMode() {
+    batchModeEnabled = !batchModeEnabled;
+    const btn = document.getElementById('batchModeBtn');
+    const downloadBtn = document.getElementById('downloadBtn');
+    const saveToAssetBtn = document.getElementById('saveToAssetBtn');
+    
+    if (batchModeEnabled) {
+        btn.textContent = '取消选择';
+        btn.classList.add('active');
+        downloadBtn.style.display = 'inline-block';
+        if (saveToAssetBtn) saveToAssetBtn.style.display = 'inline-block';
+    } else {
+        btn.textContent = '批量选择';
+        btn.classList.remove('active');
+        downloadBtn.style.display = 'none';
+        if (saveToAssetBtn) saveToAssetBtn.style.display = 'none';
+        selectedImages.clear();
+    }
+    
+    loadI2ITasks(); // 重新渲染任务列表
+}
+
+// 保存选中的图片到资产库
+function saveSelectedImagesToAssets() {
+    if (selectedImages.size === 0) {
+        showAlert('请先选择要保存的图片', 'error');
+        return;
+    }
+    
+    // 收集选中的图片文件信息
+    const files = [];
+    for (const imageId of selectedImages) {
+        const checkbox = document.querySelector(`.batch-checkbox[data-image-id="${imageId}"]`);
+        if (checkbox && checkbox.dataset.imageUrl) {
+            const imageUrl = checkbox.dataset.imageUrl;
+            const filename = imageUrl.split('/').pop();
+            files.push({
+                filename: filename,
+                source_type: 'i2i',
+                file_type: 'image'
+            });
+        }
+    }
+    
+    if (files.length === 0) {
+        showAlert('没有找到可保存的图片', 'error');
+        return;
+    }
+    
+    openSaveToAssetModal({
+        files: files,
+        fileType: 'image',
+        onComplete: (count) => {
+            if (count > 0) {
+                selectedImages.clear();
+                updateSelectedCount();
+            }
+        }
+    });
+}
+
+function updateSelectedCount() {
+    selectedImages.clear();
+    document.querySelectorAll('.batch-checkbox:checked').forEach(checkbox => {
+        selectedImages.add(checkbox.dataset.imageId);
+    });
+    document.getElementById('selectedCount').textContent = selectedImages.size;
+}
+
+function toggleImageCheckbox(imageId) {
+    const checkbox = document.querySelector(`.batch-checkbox[data-image-id="${imageId}"]`);
+    if (!checkbox) return;
+    
+    if (checkbox.checked) {
+        selectedImages.add(imageId);
+    } else {
+        selectedImages.delete(imageId);
+    }
+    
+    const thumbnail = document.getElementById(`image-${imageId}`);
+    if (thumbnail) {
+        if (checkbox.checked) {
+            thumbnail.classList.add('selected');
+        } else {
+            thumbnail.classList.remove('selected');
+        }
+    }
+    
+    updateSelectedCount();
+}
+
+function toggleImageSelection(imageId) {
+    const checkbox = document.querySelector(`.batch-checkbox[data-image-id="${imageId}"]`);
+    if (checkbox) {
+        checkbox.checked = !checkbox.checked;
+        
+        if (checkbox.checked) {
+            selectedImages.add(imageId);
+        } else {
+            selectedImages.delete(imageId);
+        }
+        
+        const thumbnail = document.getElementById(`image-${imageId}`);
+        if (thumbnail) {
+            if (checkbox.checked) {
+                thumbnail.classList.add('selected');
+            } else {
+                thumbnail.classList.remove('selected');
+            }
+        }
+        
+        updateSelectedCount();
+    }
+}
+
+function downloadImage(url, filename) {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+}
+
+// 重新生成图生图任务
+async function regenerateI2ITask(taskId) {
+    if (!taskId) {
+        showAlert('无效的任务ID', 'error');
+        return;
+    }
+    
+    try {
+        showAlert('正在重新生成任务...', 'info');
+        
+        const response = await fetch('/api/regenerate-task', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ 
+                task_id: taskId,
+                task_type: 'i2i'  // 图生图任务
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            showAlert(data.message || '重新生成任务', 'success');
+            
+            // 启动新任务的轮询
+            if (data.tasks && data.tasks.length > 0) {
+                data.tasks.forEach(task => {
+                    if (task.task_id) {
+                        startI2IPolling(task.task_id);
+                    }
+                });
+            }
+            
+            // 刷新任务列表以显示新任务
+            loadI2ITasks();
+        } else {
+            showAlert(data.message || '重新生成任务失败', 'error');
+        }
+    } catch (error) {
+        console.error('重新生成任务失败:', error);
+        showAlert('重新生成任务失败: ' + error.message, 'error');
+    }
+}
+
+async function downloadSelected() {
+    if (selectedImages.size === 0) {
+        showAlert('请先选择要下载的图片', 'error');
+        return;
+    }
+    
+    showAlert(`开始下载 ${selectedImages.size} 张图片...`, 'success');
+    
+    let downloadCount = 0;
+    for (const imageId of selectedImages) {
+        const checkbox = document.querySelector(`.batch-checkbox[data-image-id="${imageId}"]`);
+        if (checkbox && checkbox.dataset.imageUrl) {
+            const imageUrl = checkbox.dataset.imageUrl;
+            downloadImage(imageUrl, `image_${imageId}.jpg`);
+            downloadCount++;
+            await new Promise(resolve => setTimeout(resolve, 300));
+        }
+    }
+    
+    if (downloadCount > 0) {
+        showAlert(`已启动 ${downloadCount} 张图片下载`, 'success');
+    }
+}
+// - getStatusText(status)
+
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+        closeImageModal();
+    }
+});
+</script>
+{% endblock %}
