@@ -1,0 +1,1267 @@
+{% extends "base.html" %}
+
+{% block title %}通义万相 - 参考生视频{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="/static/common.css">
+{% endblock %}
+
+{% block body %}
+<div class="workspace-container">
+    <div class="workspace-header">
+        <h1>🎥 通义万相参考生视频</h1>
+        <div>
+            <button class="btn btn-secondary" onclick="window.location.href='/assets'" style="margin-right: 10px;">📁 资产库</button>
+            <button class="btn btn-secondary" onclick="window.location.href='/workspace'" style="margin-right: 10px;">图生视频</button>
+            <button class="btn btn-secondary" onclick="window.location.href='/text2video'" style="margin-right: 10px;">文生视频</button>
+            <button class="btn btn-secondary" onclick="window.location.href='/kf2v'" style="margin-right: 10px;">首尾帧生视频</button>
+            <button class="btn btn-secondary active" style="margin-right: 10px;">参考生视频</button>
+            <button class="btn btn-secondary" onclick="window.location.href='/text2image'" style="margin-right: 10px;">文生图</button>
+            <button class="btn btn-secondary" onclick="window.location.href='/image2image'" style="margin-right: 10px;">图生图</button>
+            <button class="btn btn-secondary" onclick="window.location.href='/voice-clone'" style="margin-right: 10px;">语音复刻</button>
+            <button class="btn btn-secondary" onclick="logout()">退出</button>
+        </div>
+    </div>
+    
+    <div class="workspace-content">
+        <!-- 左侧：创建任务 -->
+        <div class="create-panel">
+            <h2>创建新任务</h2>
+            
+            <div class="form-section">
+                <!-- 参考视频上传 -->
+                <div class="form-group">
+                    <label>参考视频（必填，最多3个）</label>
+                    <div class="upload-area" id="videoUploadArea">
+                        <input type="file" id="videoInput" accept="video/mp4,video/mov" multiple style="display: none;">
+                        <div class="upload-placeholder" id="videoPlaceholder">
+                            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                                <polyline points="17 8 12 3 7 8"></polyline>
+                                <line x1="12" y1="3" x2="12" y2="15"></line>
+                            </svg>
+                            <p>点击或拖拽上传参考视频</p>
+                            <small>支持 MP4、MOV 格式，时长2-30秒，单个文件≤100MB</small>
+                        </div>
+                        <div id="videoPreviewList" class="video-preview-list" style="display: none;"></div>
+                    </div>
+                </div>
+                
+                <!-- 提示词 -->
+                <div class="form-group">
+                    <label>提示词（必填）</label>
+                    <textarea id="prompt" rows="4" placeholder="使用 character1 指代参考视频中的主体，例如：character1在沙发上开心的看电影"></textarea>
+                    <small style="color: #888;">💡 提示：使用 character1 指代参考视频中的主体角色</small>
+                </div>
+                
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>模型选择</label>
+                        <select id="model">
+                            <option value="wan2.6-r2v">wan2.6-r2v（推荐）</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>分辨率</label>
+                        <select id="size">
+                            <optgroup label="720P 档位（费用较低）">
+                                <option value="1280*720" selected>720P 16:9 (1280*720)</option>
+                                <option value="720*1280">720P 9:16 (720*1280)</option>
+                                <option value="960*960">720P 1:1 (960*960)</option>
+                                <option value="1088*832">720P 4:3 (1088*832)</option>
+                                <option value="832*1088">720P 3:4 (832*1088)</option>
+                            </optgroup>
+                            <optgroup label="1080P 档位（费用更高）">
+                                <option value="1920*1080">1080P 16:9 (1920*1080)</option>
+                                <option value="1080*1920">1080P 9:16 (1080*1920)</option>
+                                <option value="1440*1440">1080P 1:1 (1440*1440)</option>
+                                <option value="1632*1248">1080P 4:3 (1632*1248)</option>
+                                <option value="1248*1632">1080P 3:4 (1248*1632)</option>
+                            </optgroup>
+                        </select>
+                    </div>
+                </div>
+                
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>视频时长</label>
+                        <select id="duration">
+                            <option value="5">5秒</option>
+                            <option value="10">10秒</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>镜头类型</label>
+                        <select id="shotType">
+                            <option value="single">单镜头</option>
+                            <option value="multi">多镜头</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <!-- 反向提示词 -->
+                <div class="form-group">
+                    <label>反向提示词（可选）</label>
+                    <input type="text" id="negativePrompt" placeholder="不希望出现的内容...">
+                </div>
+                
+                <div class="form-group">
+                    <label>批量生成数量</label>
+                    <select id="batchCount">
+                        <option value="1" selected>1个视频（推荐）</option>
+                        <option value="2">2个视频</option>
+                        <option value="3">3个视频</option>
+                        <option value="4">4个视频（最多）</option>
+                    </select>
+                    <small>一次生成多个相同参数的视频，可从中挑选最佳效果</small>
+                </div>
+                
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="audio" checked>
+                        启用音频自动配音
+                    </label>
+                </div>
+                
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="watermark">
+                        添加水印
+                    </label>
+                </div>
+                
+                <button class="btn btn-primary btn-large btn-generate" onclick="createR2vTask()" id="createBtn">
+                    <span class="btn-icon">✨</span>
+                    <span class="btn-text">开始生成</span>
+                </button>
+            </div>
+        </div>
+        
+        <!-- 右侧：历史记录 -->
+        <div class="history-panel">
+            <div class="history-header">
+                <h2>历史记录</h2>
+                <div class="history-actions">
+                    <button class="btn btn-secondary btn-sm" onclick="toggleBatchMode()" id="batchModeBtn">
+                        批量选择
+                    </button>
+                    <button class="btn btn-primary btn-sm" onclick="downloadSelected()" id="downloadBtn" style="display:none;">
+                        下载选中 (<span id="selectedCount">0</span>)
+                    </button>
+                    <button class="btn btn-secondary btn-sm" onclick="saveSelectedToAssets()" id="saveToAssetBtn" style="display:none;">
+                        📁 保存到资产库
+                    </button>
+                </div>
+            </div>
+            <div class="history-panel-wrapper">
+                <div class="task-list-container">
+                    <div id="taskList" class="task-list">
+                        <div class="loading">加载中...</div>
+                    </div>
+                </div>
+                <!-- 右侧缩略图快速导航 -->
+                <div class="thumbnail-nav" id="thumbnailNav">
+                    <div class="thumbnail-nav-header">快速导航 (<span id="thumbNavCount">0</span>)</div>
+                    <div class="thumbnail-nav-list" id="thumbnailNavList">
+                        <div class="thumbnail-nav-empty">暂无已完成<br>的视频</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 视频放大浮层 -->
+<div class="video-modal" id="videoModal" onclick="closeVideoModal()">
+    <div class="video-modal-content" onclick="event.stopPropagation()">
+        <button class="video-modal-close" onclick="closeVideoModal()">&times;</button>
+        <video id="modalVideo" controls autoplay></video>
+    </div>
+</div>
+
+<style>
+.video-preview-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 10px;
+    margin-top: 10px;
+}
+
+.video-preview-item {
+    position: relative;
+    border: 2px solid #ddd;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.video-preview-item video {
+    width: 100%;
+    display: block;
+}
+
+.video-preview-item .remove-btn {
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    background: rgba(255, 0, 0, 0.8);
+    color: white;
+    border: none;
+    border-radius: 50%;
+    width: 24px;
+    height: 24px;
+    cursor: pointer;
+    font-size: 16px;
+    line-height: 1;
+    padding: 0;
+}
+
+.video-preview-item .remove-btn:hover {
+    background: rgba(255, 0, 0, 1);
+}
+
+/* 批量任务ID显示样式 */
+.batch-task-ids {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+
+.batch-task-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    transition: background 0.15s;
+}
+
+.batch-task-row:hover {
+    background: #f0f2ff;
+}
+
+.batch-task-row .task-index {
+    font-size: 11px;
+    font-weight: 600;
+    color: #667eea;
+    min-width: 24px;
+}
+
+.batch-task-row .task-id {
+    font-family: 'Monaco', 'Consolas', monospace;
+    font-size: 11px;
+    color: #555;
+    cursor: pointer;
+    padding: 2px 6px;
+    background: #fff;
+    border: 1px solid #e0e4ff;
+    border-radius: 4px;
+    transition: all 0.2s;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.batch-task-row .task-id:hover {
+    background: #667eea;
+    color: #fff;
+    border-color: #667eea;
+}
+
+.batch-task-row .task-status {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    min-width: 50px;
+    text-align: center;
+}
+
+/* 视频网格和缩略图样式 */
+.video-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 12px;
+}
+
+.video-thumbnail {
+    position: relative;
+    border-radius: 8px;
+    overflow: hidden;
+    cursor: pointer;
+    aspect-ratio: 16 / 9;
+    background: #f0f0f0;
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.video-thumbnail:hover {
+    transform: scale(1.02);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
+
+.video-thumbnail.selected {
+    box-shadow: 0 0 0 3px #667eea;
+}
+
+.video-thumbnail .video-poster-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.video-thumbnail .video-index {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    background: rgba(0,0,0,0.6);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 4px;
+}
+
+.video-thumbnail .batch-checkbox {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 20px;
+    height: 20px;
+    cursor: pointer;
+    z-index: 10;
+}
+
+/* 按钮样式 */
+.btn.icon-only {
+    padding: 4px 8px;
+    min-width: auto;
+}
+
+/* 参考视频缩略图容器样式 */
+.r2v-ref-videos-container {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 15px;
+    flex-wrap: wrap;
+}
+
+.r2v-ref-video-item {
+    flex: 0 0 auto;
+    max-width: 120px;
+    text-align: center;
+}
+
+.r2v-ref-video-label {
+    font-size: 12px;
+    color: #666;
+    margin-bottom: 6px;
+    font-weight: 500;
+}
+
+.r2v-ref-video-poster {
+    width: 100%;
+    max-width: 120px;
+    max-height: 90px;
+    border-radius: 8px;
+    object-fit: cover;
+    cursor: pointer;
+    transition: all 0.3s;
+    border: 1px solid #e0e0e0;
+    background: #f5f5f5;
+}
+
+.r2v-ref-video-poster:hover {
+    transform: scale(1.05);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+}
+
+/* 参考视频播放按钮视觉提示 */
+.r2v-ref-video-item {
+    position: relative;
+}
+
+.r2v-ref-video-item::after {
+    content: '▶';
+    position: absolute;
+    bottom: 32px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 28px;
+    height: 28px;
+    background: rgba(0,0,0,0.5);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-size: 10px;
+    pointer-events: none;
+    transition: all 0.2s;
+}
+
+.r2v-ref-video-item:hover::after {
+    background: rgba(22, 100, 255, 0.8);
+}
+</style>
+
+<!-- Batch video processing script -->
+<script src="/static/batch-video.js"></script>
+<script src="/static/asset-picker.js"></script>
+<script src="/static/common.js"></script>
+<!-- 缩略图导航组件 -->
+<script src="/static/thumbnail-nav.js"></script>
+<script>
+// 页面状态
+let uploadedVideoFilenames = [];
+let r2vPollingIntervals = new Map();
+let batchModeEnabled = false;
+let selectedVideos = new Set();
+
+// 视频懒加载Intersection Observer
+let videoObserver = null;
+
+// 用于防止频繁刷新的节流控制
+let pendingRefresh = false;
+let lastRefreshTime = 0;
+const REFRESH_THROTTLE_MS = 2000;
+
+// 缓存任务状态
+let taskStatusCache = new Map();
+
+// 分页加载状态
+let currentPage = 1;
+let hasMoreTasks = true;
+let isLoadingMore = false;
+const TASKS_PER_PAGE = 10;
+let loadedTaskIds = new Set();
+
+// 初始化视频懒加载Observer
+function initVideoLazyLoad() {
+    if (videoObserver) {
+        videoObserver.disconnect();
+    }
+    
+    videoObserver = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                const video = entry.target;
+                const dataSrc = video.getAttribute('data-src');
+                if (dataSrc && video.src !== dataSrc) {
+                    video.src = dataSrc;
+                    video.load();
+                    video.removeAttribute('data-src');
+                }
+                videoObserver.unobserve(video);
+            }
+        });
+    }, {
+        rootMargin: '100px',
+        threshold: 0.1
+    });
+}
+
+// 观察所有懒加载视频
+function observeLazyVideos() {
+    if (!videoObserver) {
+        initVideoLazyLoad();
+    }
+    document.querySelectorAll('video[data-src]').forEach(video => {
+        videoObserver.observe(video);
+    });
+}
+
+// 页面加载时获取历史记录
+window.addEventListener('load', function() {
+    initVideoLazyLoad();
+    initInfiniteScroll();
+    loadR2vTasks();
+    
+    // 初始化缩略图导航
+    ThumbnailNav.init({
+        apiEndpoint: '/api/r2v-thumbnails',
+        mediaType: 'video',
+        itemsPerPage: 50,
+        enableBatchSupport: true,
+        virtualScrollEnabled: false  // 禁用虚拟滚动，使用传统滚动
+    });
+});
+
+// 初始化无限滚动
+function initInfiniteScroll() {
+    const taskList = document.getElementById('taskList');
+    
+    if (taskList) {
+        taskList.addEventListener('scroll', function() {
+            const scrollTop = taskList.scrollTop;
+            const scrollHeight = taskList.scrollHeight;
+            const clientHeight = taskList.clientHeight;
+            const distanceToBottom = scrollHeight - scrollTop - clientHeight;
+            
+            if (distanceToBottom < 300 && hasMoreTasks && !isLoadingMore) {
+                console.log('[DEBUG] 触发加载更多 R2V，距离底部:', distanceToBottom);
+                loadMoreR2vTasks();
+            }
+        });
+        console.log('[DEBUG] R2V 无限滚动已初始化');
+    }
+}
+
+// 加载更多任务
+async function loadMoreR2vTasks() {
+    if (isLoadingMore || !hasMoreTasks) {
+        console.log('[DEBUG] R2V 跳过加载: isLoadingMore=', isLoadingMore, 'hasMoreTasks=', hasMoreTasks);
+        return;
+    }
+    
+    isLoadingMore = true;
+    currentPage++;
+    
+    console.log('[DEBUG] R2V 开始加载第', currentPage, '页');
+    
+    try {
+        const response = await fetch(`/api/r2v-tasks?page=${currentPage}&limit=${TASKS_PER_PAGE}`);
+        const data = await response.json();
+        
+        console.log('[DEBUG] R2V 加载结果: success=', data.success, 'tasks=', data.tasks?.length, 'has_more=', data.has_more);
+        
+        if (data.success && data.tasks && data.tasks.length > 0) {
+            appendR2vTasks(data.tasks);
+            hasMoreTasks = data.has_more;
+            
+            setTimeout(() => {
+                observeLazyVideos();
+            }, 100);
+            
+            data.tasks.forEach(task => {
+                if (task.task_status === 'PENDING' || task.task_status === 'RUNNING') {
+                    startR2vPolling(task.task_id);
+                }
+            });
+        } else {
+            hasMoreTasks = false;
+        }
+    } catch (error) {
+        console.error('加载更多任务失败:', error);
+        currentPage--;
+    } finally {
+        isLoadingMore = false;
+    }
+}
+
+// 视频上传处理
+const videoUploadArea = document.getElementById('videoUploadArea');
+const videoInput = document.getElementById('videoInput');
+const videoPlaceholder = document.getElementById('videoPlaceholder');
+const videoPreviewList = document.getElementById('videoPreviewList');
+
+videoUploadArea.addEventListener('click', () => {
+    if (uploadedVideoFilenames.length < 3) {
+        videoInput.click();
+    }
+});
+
+videoUploadArea.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    videoUploadArea.classList.add('dragover');
+});
+
+videoUploadArea.addEventListener('dragleave', () => {
+    videoUploadArea.classList.remove('dragover');
+});
+
+videoUploadArea.addEventListener('drop', (e) => {
+    e.preventDefault();
+    videoUploadArea.classList.remove('dragover');
+    const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('video/'));
+    handleVideoFiles(files);
+});
+
+videoInput.addEventListener('change', (e) => {
+    const files = Array.from(e.target.files);
+    handleVideoFiles(files);
+});
+
+async function handleVideoFiles(files) {
+    const remainingSlots = 3 - uploadedVideoFilenames.length;
+    const filesToUpload = files.slice(0, remainingSlots);
+    
+    for (const file of filesToUpload) {
+        if (file.size > 100 * 1024 * 1024) {
+            showAlert(`文件 ${file.name} 超过100MB限制`, 'error');
+            continue;
+        }
+        
+        await uploadVideo(file);
+    }
+    
+    updateVideoPreview();
+}
+
+async function uploadVideo(file) {
+    const formData = new FormData();
+    formData.append('video', file);
+    
+    try {
+        const response = await fetch('/api/upload-r2v-video', {
+            method: 'POST',
+            body: formData
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            uploadedVideoFilenames.push(data.filename);
+            showAlert('视频上传成功', 'success');
+        } else {
+            showAlert(data.message || '上传失败', 'error');
+        }
+    } catch (error) {
+        showAlert('上传失败：' + error.message, 'error');
+    }
+}
+
+function updateVideoPreview() {
+    if (uploadedVideoFilenames.length === 0) {
+        videoPlaceholder.style.display = 'flex';
+        videoPreviewList.style.display = 'none';
+        videoPreviewList.innerHTML = '';
+        return;
+    }
+    
+    videoPlaceholder.style.display = 'none';
+    videoPreviewList.style.display = 'grid';
+    
+    videoPreviewList.innerHTML = uploadedVideoFilenames.map((filename, index) => `
+        <div class="video-preview-item">
+            <video src="/api/video/r2v/{{ session.get('api_key_hash', '') }}/${filename}" controls></video>
+            <button class="remove-btn" onclick="removeVideo(${index})">&times;</button>
+        </div>
+    `).join('');
+}
+
+function removeVideo(index) {
+    uploadedVideoFilenames.splice(index, 1);
+    updateVideoPreview();
+}
+
+// 创建R2V任务
+async function createR2vTask() {
+    if (uploadedVideoFilenames.length === 0) {
+        showAlert('请先上传参考视频', 'error');
+        return;
+    }
+    
+    const prompt = document.getElementById('prompt').value.trim();
+    if (!prompt) {
+        showAlert('请输入提示词', 'error');
+        return;
+    }
+    
+    const requestBody = {
+        reference_video_filenames: uploadedVideoFilenames,
+        prompt: prompt,
+        model: document.getElementById('model').value,
+        size: document.getElementById('size').value,
+        duration: parseInt(document.getElementById('duration').value),
+        shot_type: document.getElementById('shotType').value,
+        negative_prompt: document.getElementById('negativePrompt').value,
+        audio: document.getElementById('audio').checked,
+        watermark: document.getElementById('watermark').checked,
+        batch_count: parseInt(document.getElementById('batchCount').value)
+    };
+    
+    const btn = document.getElementById('createBtn');
+    const btnIcon = btn.querySelector('.btn-icon');
+    const btnText = btn.querySelector('.btn-text');
+    
+    btn.disabled = true;
+    btnIcon.textContent = '⏳';
+    btnText.textContent = '创建中...';
+    
+    try {
+        const response = await fetch('/api/create-r2v-task', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(requestBody)
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            showAlert(data.message || '任务创建成功', 'success');
+            loadR2vTasks();
+            
+            // 为批量任务开始轮询
+            if (data.tasks) {
+                data.tasks.forEach(task => {
+                    startR2vPolling(task.task_id);
+                });
+            }
+        } else {
+            showAlert(data.message, 'error');
+        }
+    } catch (error) {
+        showAlert('创建失败：' + error.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btnIcon.textContent = '✨';
+        btnText.textContent = '开始生成';   
+    }
+}
+
+// 加载任务列表
+async function loadR2vTasks(reset = true) {
+    try {
+        // 重置分页状态
+        if (reset) {
+            currentPage = 1;
+            hasMoreTasks = true;
+            loadedTaskIds.clear();
+        }
+        
+        const response = await fetch(`/api/r2v-tasks?page=${currentPage}&limit=${TASKS_PER_PAGE}`);
+        const data = await response.json();
+        
+        if (data.success) {
+            if (reset) {
+                renderR2vTasks(data.tasks);
+            } else {
+                appendR2vTasks(data.tasks);
+            }
+            
+            hasMoreTasks = data.has_more;
+            
+            // 渲染后启用懒加载
+            setTimeout(() => {
+                observeLazyVideos();
+            }, 100);
+            
+            // 更新缩略图导航
+            updateThumbnailNav();
+            
+            // 为进行中的任务启动轮询
+            data.tasks.forEach(task => {
+                if (task.task_status === 'PENDING' || task.task_status === 'RUNNING') {
+                    startR2vPolling(task.task_id);
+                }
+            });
+        }
+    } catch (error) {
+        console.error('加载任务失败:', error);
+    }
+}
+
+// 渲染任务列表
+function renderR2vTasks(tasks) {
+    const taskList = document.getElementById('taskList');
+    
+    if (tasks.length === 0) {
+        taskList.innerHTML = '<div class="loading">暂无历史记录</div>';
+        return;
+    }
+    
+    // 记录已加载的任务ID
+    tasks.forEach(t => loadedTaskIds.add(t.task_id));
+    
+    // 按batch_id分组
+    const batchGroups = groupR2vTasksByBatch(tasks);
+    
+    taskList.innerHTML = renderR2vTaskGroups(batchGroups);
+}
+
+// 追加任务
+function appendR2vTasks(tasks) {
+    const taskList = document.getElementById('taskList');
+    
+    // 过滤已加载的任务
+    const newTasks = tasks.filter(t => !loadedTaskIds.has(t.task_id));
+    if (newTasks.length === 0) return;
+    
+    // 记录新加载的任务ID
+    newTasks.forEach(t => loadedTaskIds.add(t.task_id));
+    
+    // 按batch_id分组
+    const batchGroups = groupR2vTasksByBatch(newTasks);
+    
+    // 追加到列表
+    const tempDiv = document.createElement('div');
+    tempDiv.innerHTML = renderR2vTaskGroups(batchGroups);
+    
+    while (tempDiv.firstChild) {
+        taskList.appendChild(tempDiv.firstChild);
+    }
+}
+
+// 按batch_id分组任务
+function groupR2vTasksByBatch(tasks) {
+    const batchGroups = {};
+    tasks.forEach(task => {
+        const batchId = task.batch_id || task.task_id;
+        if (!batchGroups[batchId]) {
+            batchGroups[batchId] = [];
+        }
+        batchGroups[batchId].push(task);
+    });
+    return batchGroups;
+}
+
+// 渲染任务分组为HTML
+function renderR2vTaskGroups(batchGroups) {
+    let html = '';
+    Object.keys(batchGroups).forEach(batchId => {
+        const groupTasks = batchGroups[batchId];
+        const firstTask = groupTasks[0];
+        const isBatch = groupTasks.length > 1;
+        
+        html += `<div class="task-item" id="task-${firstTask.task_id}" data-batch-id="${batchId}">`;
+        
+        // 任务头部 - 显示所有task_id
+        html += '<div class="task-header">';
+        html += '<div class="batch-task-ids">';
+        groupTasks.forEach((task, idx) => {
+            const statusClass = `status-${(task.task_status || 'PENDING').toLowerCase()}`;
+            const statusText = getStatusText(task.task_status || 'PENDING');
+            html += `<div class="batch-task-row">`;
+            html += `<span class="task-index">#${idx + 1}</span>`;
+            html += `<span class="task-id" onclick="copyToClipboard('${task.task_id}')" title="点击复制">${task.task_id}</span>`;
+            html += `<span class="task-status ${statusClass}">${statusText}</span>`;
+            html += '</div>';
+        });
+        html += '</div>';
+        html += '<div class="task-actions">';
+        html += `<button class="btn btn-secondary btn-sm icon-only" onclick="event.stopPropagation(); regenerateR2vTask('${firstTask.task_id}')" title="使用相同配置重新生成">🔄</button>`;
+        html += '</div>';
+        html += '</div>';
+        
+        // 任务内容
+        html += '<div class="task-content">';
+        
+        // 参考视频缩略图展示
+        if (firstTask.reference_video_filenames && firstTask.reference_video_filenames.length > 0) {
+            html += '<div class="r2v-ref-videos-container">';
+            firstTask.reference_video_filenames.forEach((filename, index) => {
+                const posterUrl = `/api/r2v-ref-video-poster/{{ session.get('api_key_hash', '') }}/${filename}`;
+                const videoUrl = `/api/video/r2v/{{ session.get('api_key_hash', '') }}/${filename}`;
+                const label = firstTask.reference_video_filenames.length > 1 ? `参考${index + 1}` : '参考视频';
+                html += '<div class="r2v-ref-video-item">';
+                html += `<div class="r2v-ref-video-label">${label}</div>`;
+                html += `<img src="${posterUrl}" class="r2v-ref-video-poster" alt="参考视频" onclick="openVideoModal('${videoUrl}')" loading="lazy">`;
+                html += '</div>';
+            });
+            html += '</div>';
+        }
+        
+        // 任务信息
+        html += '<div class="task-info">';
+        html += `<p><strong>模型:</strong> ${firstTask.model || 'wan2.6-r2v'}</p>`;
+        html += `<p><strong>分辨率:</strong> ${firstTask.size || '1280*720'}</p>`;
+        html += `<p><strong>时长:</strong> ${firstTask.duration || 5}秒</p>`;
+        html += `<p><strong>镜头:</strong> ${firstTask.shot_type === 'multi' ? '多镜头' : '单镜头'}</p>`;
+        
+        if (firstTask.prompt) {
+            html += `<p><strong>提示词:</strong> ${firstTask.prompt}</p>`;
+        }
+        
+        if (firstTask.created_at) {
+            html += `<p><strong>创建时间:</strong> ${new Date(firstTask.created_at).toLocaleString('zh-CN')}</p>`;
+        }
+        
+        // 显示错误信息
+        if (firstTask.task_status === 'FAILED' && firstTask.message) {
+            html += `<div class="error-message">⚠ 错误信息: ${firstTask.message}</div>`;
+        }
+        
+        html += '</div>';
+        html += '</div>';
+        
+        // 视频网格（批量或单个）- 使用缩略图
+        const succeededTasks = groupTasks.filter(t => t.task_status === 'SUCCEEDED' && t.local_video_path);
+        if (succeededTasks.length > 0) {
+            html += '<div class="video-grid" style="margin-top: 15px;">';
+            succeededTasks.forEach((task, index) => {
+                const videoId = `${task.task_id}_${index}`;
+                const clickHandler = batchModeEnabled ? `toggleVideoSelection('${videoId}')` : `openVideoModal('${task.local_video_path}')`;
+                const thumbnailClass = batchModeEnabled ? 'video-thumbnail batch-mode' : 'video-thumbnail';
+                
+                html += `<div class="${thumbnailClass}" id="video-${videoId}" onclick="${clickHandler}">`;
+                
+                // 批量模式下显示复选框
+                if (batchModeEnabled) {
+                    const isChecked = selectedVideos.has(videoId) ? 'checked' : '';
+                    html += `<input type="checkbox" 
+                                    class="batch-checkbox" 
+                                    data-video-id="${videoId}" 
+                                    data-video-url="${task.local_video_path}"
+                                    ${isChecked}
+                                    onclick="event.stopPropagation(); toggleVideoCheckbox('${videoId}');">`;
+                }
+                
+                html += `<div class="video-index">${isBatch ? index + 1 : ''}</div>`;
+                // 使用视频封面图
+                const posterUrl = `/api/video-poster/{{ session.get('api_key_hash', '') }}/${task.task_id}`;
+                html += `<img class="video-poster-img" src="${posterUrl}" alt="视频封面" loading="lazy">`;
+                html += '</div>';
+            });
+            html += '</div>';
+        }
+        
+        html += '</div>';
+    });
+    
+    return html;
+}
+
+// 开始轮询任务状态
+function startR2vPolling(taskId) {
+    if (r2vPollingIntervals.has(taskId)) {
+        return;
+    }
+    
+    let consecutiveFailures = 0;  // 连续失败计数
+    const MAX_FAILURES = 3;  // 最大连续失败次数
+    
+    const intervalId = setInterval(async () => {
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 8000);  // 8秒超时
+            
+            const response = await fetch(`/api/r2v-task/${taskId}`, {
+                signal: controller.signal
+            });
+            clearTimeout(timeoutId);
+            
+            const data = await response.json();
+            
+            if (data.success && data.task) {
+                const task = data.task;
+                const status = task.task_status;
+                const oldStatus = taskStatusCache.get(taskId);
+                
+                // 只有状态变化时才更新UI
+                if (oldStatus !== status) {
+                    taskStatusCache.set(taskId, status);
+                    updateR2vTaskStatus(taskId, task);
+                }
+                
+                // 如果任务完成，停止轮询
+                if (status === 'SUCCEEDED' || status === 'FAILED') {
+                    clearInterval(intervalId);
+                    r2vPollingIntervals.delete(taskId);
+                    
+                    // 任务完成时才刷新列表
+                    throttledRefresh();
+                }
+            } else {
+                consecutiveFailures++;
+                if (consecutiveFailures >= MAX_FAILURES) {
+                    console.error(`任务 ${taskId} 连续查询失败 ${MAX_FAILURES} 次，停止轮询`);
+                    clearInterval(intervalId);
+                    r2vPollingIntervals.delete(taskId);
+                    
+                    // 在UI上标记为查询失败
+                    const taskElement = document.getElementById(`task-${taskId}`);
+                    if (taskElement) {
+                        const statusSpan = taskElement.querySelector('.task-status');
+                        if (statusSpan) {
+                            statusSpan.className = 'task-status status-failed';
+                            statusSpan.textContent = '查询失败';
+                        }
+                    }
+                }
+            }
+        } catch (error) {
+            if (error.name === 'AbortError') {
+                console.error('查询任务超时:', taskId);
+            } else {
+                console.error('轮询任务失败:', error);
+            }
+            
+            consecutiveFailures++;
+            if (consecutiveFailures >= MAX_FAILURES) {
+                console.error(`任务 ${taskId} 连续查询失败 ${MAX_FAILURES} 次，停止轮询`);
+                clearInterval(intervalId);
+                r2vPollingIntervals.delete(taskId);
+                
+                // 在UI上标记为查询失败
+                const taskElement = document.getElementById(`task-${taskId}`);
+                if (taskElement) {
+                    const statusSpan = taskElement.querySelector('.task-status');
+                    if (statusSpan) {
+                        statusSpan.className = 'task-status status-failed';
+                        statusSpan.textContent = '查询失败';
+                    }
+                }
+            }
+        }
+    }, 5000); // 每5秒轮询一次
+    
+    r2vPollingIntervals.set(taskId, intervalId);
+}
+
+// 增量更新单个任务状态
+function updateR2vTaskStatus(taskId, task) {
+    const taskItem = document.getElementById(`task-${taskId}`);
+    if (!taskItem) return;
+    
+    const statusSpan = taskItem.querySelector('.task-status');
+    if (statusSpan) {
+        statusSpan.className = 'task-status';
+        statusSpan.classList.add(`status-${(task.task_status || 'unknown').toLowerCase()}`);
+        statusSpan.textContent = getStatusText(task.task_status);
+    }
+    
+    if (task.task_status === 'FAILED' && task.message) {
+        const taskContent = taskItem.querySelector('.task-content');
+        if (taskContent && !taskContent.querySelector('.error-message')) {
+            const errorDiv = document.createElement('div');
+            errorDiv.className = 'error-message';
+            errorDiv.innerHTML = `⚠ 错误信息: ${task.message}`;
+            taskContent.appendChild(errorDiv);
+        }
+    }
+}
+
+// 节流刷新
+function throttledRefresh() {
+    const now = Date.now();
+    
+    if (now - lastRefreshTime < REFRESH_THROTTLE_MS) {
+        if (!pendingRefresh) {
+            pendingRefresh = true;
+            setTimeout(() => {
+                pendingRefresh = false;
+                lastRefreshTime = Date.now();
+                loadR2vTasks();
+            }, REFRESH_THROTTLE_MS - (now - lastRefreshTime));
+        }
+        return;
+    }
+    
+    lastRefreshTime = now;
+    loadR2vTasks();
+}
+
+function getStatusText(status) {
+    const statusMap = {
+        'PENDING': '等待中',
+        'RUNNING': '生成中',
+        'SUCCEEDED': '已完成',
+        'FAILED': '失败',
+        'CANCELED': '已取消',
+        'UNKNOWN': '未知'
+    };
+    return statusMap[status] || status;
+}
+
+function toggleBatchMode() {
+    batchModeEnabled = !batchModeEnabled;
+    const btn = document.getElementById('batchModeBtn');
+    const downloadBtn = document.getElementById('downloadBtn');
+    const saveToAssetBtn = document.getElementById('saveToAssetBtn');
+    
+    if (batchModeEnabled) {
+        btn.textContent = '取消选择';
+        downloadBtn.style.display = 'inline-block';
+        saveToAssetBtn.style.display = 'inline-block';
+    } else {
+        btn.textContent = '批量选择';
+        downloadBtn.style.display = 'none';
+        saveToAssetBtn.style.display = 'none';
+        selectedVideos.clear();
+        document.getElementById('selectedCount').textContent = '0';
+    }
+}
+
+function downloadSelected() {
+    if (selectedVideos.size === 0) {
+        showAlert('请先选择要下载的视频', 'error');
+        return;
+    }
+    
+    showAlert(`开始下载 ${selectedVideos.size} 个视频...`, 'success');
+    
+    let downloadCount = 0;
+    for (const videoId of selectedVideos) {
+        const checkbox = document.querySelector(`.batch-checkbox[data-video-id="${videoId}"]`);
+        if (checkbox && checkbox.dataset.videoUrl) {
+            const videoUrl = checkbox.dataset.videoUrl;
+            downloadVideo(videoUrl, `video_${videoId}.mp4`);
+            downloadCount++;
+        }
+    }
+    
+    if (downloadCount > 0) {
+        showAlert(`已启动 ${downloadCount} 个视频下载`, 'success');
+    }
+}
+
+// 下载视频
+function downloadVideo(url, filename) {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+}
+
+// 更新选中数量
+function updateSelectedCount() {
+    selectedVideos.clear();
+    document.querySelectorAll('.batch-checkbox:checked').forEach(checkbox => {
+        selectedVideos.add(checkbox.dataset.videoId || checkbox.dataset.taskId);
+    });
+    document.getElementById('selectedCount').textContent = selectedVideos.size;
+}
+
+// 切换视频复选框（直接点击复选框时）
+function toggleVideoCheckbox(videoId) {
+    const checkbox = document.querySelector(`.batch-checkbox[data-video-id="${videoId}"]`);
+    if (!checkbox) return;
+    
+    if (checkbox.checked) {
+        selectedVideos.add(videoId);
+    } else {
+        selectedVideos.delete(videoId);
+    }
+    
+    const thumbnail = document.getElementById(`video-${videoId}`);
+    if (thumbnail) {
+        if (checkbox.checked) {
+            thumbnail.classList.add('selected');
+        } else {
+            thumbnail.classList.remove('selected');
+        }
+    }
+    
+    updateSelectedCount();
+}
+
+// 切换视频选择状态（点击视频缩略图时）
+function toggleVideoSelection(videoId) {
+    const checkbox = document.querySelector(`.batch-checkbox[data-video-id="${videoId}"]`);
+    if (checkbox) {
+        checkbox.checked = !checkbox.checked;
+        
+        if (checkbox.checked) {
+            selectedVideos.add(videoId);
+        } else {
+            selectedVideos.delete(videoId);
+        }
+        
+        const thumbnail = document.getElementById(`video-${videoId}`);
+        if (thumbnail) {
+            if (checkbox.checked) {
+                thumbnail.classList.add('selected');
+            } else {
+                thumbnail.classList.remove('selected');
+            }
+        }
+        
+        updateSelectedCount();
+    }
+}
+
+// 重新生成参考生视频任务
+async function regenerateR2vTask(taskId) {
+    if (!taskId) {
+        showAlert('无效的任务ID', 'error');
+        return;
+    }
+    
+    try {
+        showAlert('正在重新生成任务...', 'info');
+        
+        const response = await fetch('/api/regenerate-task', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ 
+                task_id: taskId,
+                task_type: 'r2v'  // 参考生视频任务
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            showAlert(data.message || '重新生成任务', 'success');
+            
+            // 启动新任务的轮询
+            if (data.tasks && data.tasks.length > 0) {
+                data.tasks.forEach(task => {
+                    if (task.task_id) {
+                        startR2vPolling(task.task_id);
+                    }
+                });
+            }
+            
+            // 刷新任务列表以显示新任务
+            loadR2vTasks();
+        } else {
+            showAlert(data.message || '重新生成任务失败', 'error');
+        }
+    } catch (error) {
+        console.error('重新生成任务失败:', error);
+        showAlert('重新生成任务失败: ' + error.message, 'error');
+    }
+}
+
+function openVideoModal(videoUrl) {
+    const modal = document.getElementById('videoModal');
+    const video = document.getElementById('modalVideo');
+    video.src = videoUrl;
+    modal.style.display = 'flex';
+}
+
+function closeVideoModal() {
+    const modal = document.getElementById('videoModal');
+    const video = document.getElementById('modalVideo');
+    modal.style.display = 'none';
+    video.pause();
+    video.src = '';
+}
+
+function copyToClipboard(text) {
+    navigator.clipboard.writeText(text).then(() => {
+        showAlert('已复制到剪贴板', 'success');
+    });
+}
+
+function saveSelectedToAssets() {
+    if (selectedVideos.size === 0) {
+        showAlert('请先选择要保存的视频', 'error');
+        return;
+    }
+    
+    showAlert('保存到资产库功能开发中...', 'info');
+}
+
+// ========== 缩略图快速导航功能 ==========
+// 注意：已迁移到 ThumbnailNav 组件，此处保留是为了向后兼容
+
+function updateThumbnailNav() {
+    // 使用 ThumbnailNav 组件刷新缩略图
+    if (typeof ThumbnailNav !== 'undefined' && ThumbnailNav.refresh) {
+        ThumbnailNav.refresh();
+    } else {
+        console.warn('ThumbnailNav 组件未初始化，无法刷新缩略图');
+    }
+}
+
+// 保留旧的 scrollToTask 函数以保持向后兼容性
+function scrollToTask(taskId) {
+    // 调用 ThumbnailNav 组件的方法
+    if (typeof ThumbnailNav !== 'undefined' && ThumbnailNav.scrollToTaskByTaskId) {
+        ThumbnailNav.scrollToTaskByTaskId(taskId);
+    } else {
+        console.warn('ThumbnailNav 组件未初始化，无法滚动到指定任务');
+    }
+}
+</script>
+{% endblock %}

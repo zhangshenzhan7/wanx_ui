@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>通义万相体验系统 - API Key验证</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: #f0f2f5;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+            padding: 48px 40px;
+            max-width: 480px;
+            width: 100%;
+            text-align: center;
+            border: 1px solid #e8eaed;
+        }
+
+        .logo {
+            margin-bottom: 16px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .logo svg {
+            filter: drop-shadow(0 2px 8px rgba(102, 126, 234, 0.3));
+        }
+
+        h1 {
+            color: #1f2329;
+            font-size: 24px;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .subtitle {
+            color: #646a73;
+            font-size: 14px;
+            line-height: 22px;
+            margin-bottom: 32px;
+        }
+
+        .input-group {
+            margin-bottom: 30px;
+            text-align: left;
+        }
+
+        label {
+            display: block;
+            color: #555;
+            font-size: 14px;
+            font-weight: 500;
+            margin-bottom: 10px;
+        }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 11px 15px;
+            border: 1px solid #dee0e3;
+            border-radius: 4px;
+            font-size: 14px;
+            line-height: 22px;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            background: #ffffff;
+            color: #1f2329;
+        }
+
+        input[type="text"]:hover {
+            border-color: #c9cdd4;
+        }
+
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #1664ff;
+            box-shadow: 0 0 0 3px rgba(22, 100, 255, 0.08);
+        }
+
+        input[type="text"]::placeholder {
+            color: #8f959e;
+        }
+
+        .btn {
+            width: 100%;
+            padding: 13px 15px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .btn::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+            transition: left 0.5s;
+        }
+
+        .btn:hover:not(:disabled)::before {
+            left: 100%;
+        }
+
+        .btn:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn:active:not(:disabled) {
+            transform: translateY(0);
+            box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .alert {
+            padding: 12px 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-size: 14px;
+            display: none;
+        }
+
+        .alert-error {
+            background: #fee;
+            color: #c33;
+            border: 1px solid #fcc;
+        }
+
+        .alert-success {
+            background: #efe;
+            color: #3c3;
+            border: 1px solid #cfc;
+        }
+
+        .help-text {
+            color: #8f959e;
+            font-size: 12px;
+            line-height: 20px;
+            margin-top: 8px;
+            text-align: left;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top-color: white;
+            animation: spin 1s ease-in-out infinite;
+            margin-left: 10px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .features {
+            margin-top: 32px;
+            padding-top: 24px;
+            border-top: 1px solid #e8eaed;
+        }
+
+        .features h3 {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            color: #1f2329;
+        }
+
+        .feature-grid {
+            display: grid;
+            gap: 16px;
+            text-align: left;
+        }
+
+        .feature-item {
+            display: flex;
+            align-items: start;
+            gap: 12px;
+        }
+
+        .feature-icon {
+            width: 36px;
+            height: 36px;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            background: linear-gradient(135deg, #1664ff 0%, #0e4fc3 100%);
+        }
+
+        .feature-content {
+            flex: 1;
+        }
+
+        .feature-title {
+            font-weight: 500;
+            font-size: 14px;
+            color: #1f2329;
+            margin-bottom: 2px;
+        }
+
+        .feature-desc {
+            font-size: 13px;
+            color: #646a73;
+            line-height: 1.5;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="logo">
+            <img src="/static/tongyi-logo.png" alt="通义万相" width="64" height="64">
+        </div>
+        <h1>通义万相体验系统</h1>
+        <p class="subtitle">多模态 AI 创作平台</p>
+
+        <div id="alert" class="alert"></div>
+
+        <form id="apiKeyForm">
+            <div class="input-group">
+                <label for="apiKey">API Key</label>
+                <input 
+                    type="text" 
+                    id="apiKey" 
+                    name="apiKey" 
+                    placeholder="sk-xxxxxxxxxxxxxxxx"
+                    required
+                >
+                <p class="help-text">
+                    💡 您的 API Key 仅用于调用通义万相服务，不会被存储到服务器
+                </p>
+            </div>
+
+            <button type="submit" class="btn" id="submitBtn">
+                <span id="btnText">开始使用</span>
+            </button>
+        </form>
+
+        <div class="features">
+            <h3>核心功能</h3>
+            <div class="feature-grid">
+                <div class="feature-item">
+                    <div class="feature-icon">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+                            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+                            <circle cx="12" cy="13" r="4"></circle>
+                        </svg>
+                    </div>
+                    <div class="feature-content">
+                        <div class="feature-title">图生视频</div>
+                        <div class="feature-desc">上传图片生成动态视频，支持多种模型和分辨率</div>
+                    </div>
+                </div>
+
+                <div class="feature-item">
+                    <div class="feature-icon">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+                            <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path>
+                            <polyline points="14 2 14 8 20 8"></polyline>
+                        </svg>
+                    </div>
+                    <div class="feature-content">
+                        <div class="feature-title">文生图</div>
+                        <div class="feature-desc">通过文字描述生成精美图片，支持多种尺寸</div>
+                    </div>
+                </div>
+
+                <div class="feature-item">
+                    <div class="feature-icon">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+                            <rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"></rect>
+                            <line x1="7" y1="2" x2="7" y2="22"></line>
+                            <line x1="17" y1="2" x2="17" y2="22"></line>
+                        </svg>
+                    </div>
+                    <div class="feature-content">
+                        <div class="feature-title">首尾帧生视频</div>
+                        <div class="feature-desc">提供首尾帧图片，生成流畅过渡视频</div>
+                    </div>
+                </div>
+
+                <div class="feature-item">
+                    <div class="feature-icon">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+                            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                            <circle cx="8.5" cy="8.5" r="1.5"></circle>
+                            <polyline points="21 15 16 10 5 21"></polyline>
+                        </svg>
+                    </div>
+                    <div class="feature-content">
+                        <div class="feature-title">图生图</div>
+                        <div class="feature-desc">基于参考图片进行风格转换和内容变换</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <p class="help-text" style="text-align: center; margin-top: 24px;">
+            还没有 API Key? 
+            <a href="https://help.aliyun.com/zh/model-studio/get-api-key" target="_blank" style="color: #1664ff; text-decoration: none; transition: opacity 0.2s;" onmouseover="this.style.opacity='0.8'" onmouseout="this.style.opacity='1'">
+                点击获取
+            </a>
+        </p>
+    </div>
+
+    <script>
+        const form = document.getElementById('apiKeyForm');
+        const apiKeyInput = document.getElementById('apiKey');
+        const submitBtn = document.getElementById('submitBtn');
+        const btnText = document.getElementById('btnText');
+        const alert = document.getElementById('alert');
+
+        function showAlert(message, type) {
+            alert.textContent = message;
+            alert.className = `alert alert-${type}`;
+            alert.style.display = 'block';
+            
+            if (type === 'success') {
+                setTimeout(() => {
+                    alert.style.display = 'none';
+                }, 2000);
+            }
+        }
+
+        function setLoading(loading) {
+            submitBtn.disabled = loading;
+            if (loading) {
+                btnText.innerHTML = '验证中<span class="loading"></span>';
+            } else {
+                btnText.textContent = '开始使用';
+            }
+        }
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const apiKey = apiKeyInput.value.trim();
+            
+            if (!apiKey) {
+                showAlert('请输入 API Key', 'error');
+                return;
+            }
+
+            if (!apiKey.startsWith('sk-')) {
+                showAlert('API Key 格式不正确，应以 sk- 开头', 'error');
+                return;
+            }
+
+            setLoading(true);
+            alert.style.display = 'none';
+
+            try {
+                const response = await fetch('/api/verify-key', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ api_key: apiKey })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    showAlert('验证成功，正在跳转...', 'success');
+                    setTimeout(() => {
+                        window.location.href = '/workspace';
+                    }, 1000);
+                } else {
+                    showAlert(data.message || '验证失败，请检查 API Key 是否正确', 'error');
+                    setLoading(false);
+                }
+            } catch (error) {
+                console.error('验证失败:', error);
+                showAlert('网络错误，请稍后重试', 'error');
+                setLoading(false);
+            }
+        });
+
+        apiKeyInput.focus();
+    </script>
+</body>
+</html>

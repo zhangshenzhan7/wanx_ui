@@ -1,0 +1,3671 @@
+import os
+import mimetypes
+import subprocess
+from flask import Flask, render_template, request, jsonify, session, send_file, Response, make_response
+from werkzeug.utils import secure_filename
+import hashlib
+from services.cache_service import CacheService
+from services.video_service import VideoService
+from services.audio_service import AudioService
+from config import Config
+import time
+from openai import OpenAI
+
+app = Flask(__name__)
+app.config.from_object(Config)
+
+# 初始化应用，创建必要的目录结构
+Config.init_app(app)
+
+
+def get_api_key_hash():
+    """从session获取API Key哈希"""
+    return session.get('api_key_hash')
+
+
+def get_api_key():
+    """从session获取API Key"""
+    return session.get('api_key')
+
+
+@app.route('/')
+def index():
+    """首页 - API Key输入页面"""
+    if 'api_key_hash' in session:
+        return render_template('workspace.html')
+    return render_template('index.html')
+
+
+@app.route('/api/verify-key', methods=['POST'])
+def verify_key():
+    """验证API Key"""
+    try:
+        data = request.get_json()
+        api_key = data.get('api_key', '').strip()
+
+        if not api_key:
+            return jsonify({'success': False, 'message': 'API Key不能为空'})
+
+        # 验证API Key（通过调用一个简单的API）
+        video_service = VideoService(api_key)
+        if not video_service.verify_api_key():
+            return jsonify({'success': False, 'message': 'API Key无效，请检查后重试'})
+
+        # 生成API Key哈希
+        api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()[:16]
+
+        # 保存到session
+        session['api_key'] = api_key
+        session['api_key_hash'] = api_key_hash
+
+        # 初始化用户缓存
+        cache_service = CacheService(api_key_hash)
+        cache_service.init_user_cache()
+
+        return jsonify({'success': True, 'message': 'API Key验证成功'})
+
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'验证失败: {str(e)}'})
+
+
+@app.route('/workspace')
+def workspace():
+    """工作区页面"""
+    if 'api_key_hash' not in session:
+        return render_template('index.html')
+    return render_template('workspace.html')
+
+
+@app.route('/api/logout', methods=['POST'])
+def logout():
+    """退出登录"""
+    session.clear()
+    return jsonify({'success': True})
+
+
+@app.route('/api/optimize-prompt', methods=['POST'])
+def optimize_prompt():
+    """优化提示词 - 根据任务类型分发到不同的优化函数"""
+    try:
+        api_key = get_api_key()
+        api_key_hash = get_api_key_hash()
+        if not api_key or not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+
+        data = request.get_json()
+        original_prompt = data.get('prompt', '').strip()
+        task_type = data.get('task_type', 'video')  # video(图生视频), image(文生图), text2video(文生视频)
+        image_filename = data.get('image_filename', '')  # 图片文件名（用于图生视频）
+
+        if not original_prompt:
+            return jsonify({'success': False, 'message': '提示词不能为空'})
+
+        # 根据任务类型分发到不同的优化函数
+        if task_type == 'video':
+            return optimize_prompt_for_video(api_key, api_key_hash, original_prompt, image_filename)
+        elif task_type == 'text2video':
+            return optimize_prompt_for_text2video(api_key, original_prompt)
+        else:  # image
+            return optimize_prompt_for_image(api_key, original_prompt)
+
+    except Exception as e:
+        print(f"优化提示词失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'message': f'优化失败: {str(e)}'
+        })
+
+
+def optimize_prompt_for_video(api_key: str, api_key_hash: str, original_prompt: str, image_filename: str = ''):
+    """图生视频提示词优化
+
+    流程：
+    1. 使用 qwen-vl 识别图片内容（如果提供了图片）
+    2. 将图片识别结果注入到 system prompt 中
+    3. 使用 qwen-plus 进行提示词优化（流式输出）
+
+    Args:
+        api_key: API Key
+        api_key_hash: API Key 哈希值
+        original_prompt: 用户输入的原始提示词
+        image_filename: 图片文件名
+
+    Returns:
+        流式响应
+    """
+    # 如果提供了图片，先识别图片内容
+    image_description = ''
+    if image_filename:
+        try:
+            # 构建图片路径
+            image_path = os.path.join(Config.UPLOAD_I2V_DIR, api_key_hash, image_filename)
+            if os.path.exists(image_path):
+                # 调用 qwen-vl 识别图片
+                image_description = analyze_image_with_qwen_vl(api_key, image_path)
+        except Exception as e:
+            print(f"图片识别失败: {e}")
+            # 图片识别失败不影响后续流程，继续优化
+
+    # 构建系统提示词
+    system_prompt = """
+# 角色
+你是一个图生视频提示词优化的AI助手，基于图片内容和用户输入的提示词，根据图生视频提示词最佳实践进行优化。
+
+# 任务
+用户上传了一个图片，并提供了一个简短的提示词，你需要参照提示词最佳实践，结合用户的输入和图片内容进行提示词优化。
+
+# 要求
+- 提示词内容扩写要基于用户的输入和图片内容来展开，允许基于提示词最佳实践和提示词词典，对用户缺失的提示词公式种的某些部分，做适当补充
+- 严格遵守用户输入图片的人物，风格，氛围等因素，不要随意修改
+- 提示词词典作为参考，可以进行适当发挥，使用词典以外的关键词
+
+# 提示词最佳实践
+提示词 = 运动 + 运镜
+**运动描述**：结合图像中的元素（如人物、动物），描述其动态的过程，如奔跑、打招呼，可以通过形容词来控制动态的程度与速度，如"快速地"、"缓慢地"。
+**运镜**：若对镜头运动有特定要求，通过提示词如"镜头推进"、"镜头左移"控制，若希望镜头不要发生变化，可以通过"固定镜头"来强调。
+
+# 提示词词典
+## 电影美学控制
+### 光源类型
+日光、人工光、月光、实用光、火光、荧光、阴天光、混合光、晴天光
+### 光线类型
+柔光、硬光、顶光、侧光、背光、底光、边缘光、剪影、低对比度、高对比度
+### 时间段
+白天、夜晚、黄昏、日落、黎明、日出
+### 景别
+特写、近景、中景、中近景、中全景、全景、广角
+### 构图
+中心构图、平衡构图、右/左侧重构图、对称构图、短边构图
+### 镜头
+#### 镜头焦段
+中焦距、广角、长焦、望远、超广角-鱼眼
+#### 机位角度
+过肩角度、高角度、低角度、倾斜角度、航拍、俯视角度
+#### 镜头类型
+干净的单人镜头、双人镜头、三人镜头、群像镜头、定场镜头
+### 色调
+暖色调、冷色调、高饱和度、低饱和度
+
+## 动态控制
+### 运动
+街舞、跑步、滑滑板、踢足球、网球、乒乓球、滑雪、篮球、橄榄球、顶碗舞、侧手翻
+### 人物情绪
+愤怒、恐惧、高兴、悲伤、惊讶
+### 基础运镜
+镜头推进、镜头拉远、镜头向右移动、镜头向左移动、镜头上摇
+### 高级运镜
+手持镜头、复合运镜、跟随镜头、环绕运镜
+
+## 风格化表现
+### 视觉风格
+毛毡风格、3D卡通、像素风格、木偶动画、3D游戏、黏土风格、二次元、水彩画、黑白动画、油画风格
+### 特效镜头
+移轴摄影、延时拍摄
+
+# 输出要求
+直接输出优化后的提示词，以纯文本格式输出，不要有任何额外的解释或标题。
+"""
+
+    # 如果有图片识别结果，将其拼接到系统提示词中
+    if image_description:
+        system_prompt = f"{system_prompt}\n\n# 图片内容\n\n{image_description}"
+
+    # 用户提示词就是原始输入
+    user_prompt = original_prompt
+
+    # 调用 qwen-plus 进行流式优化
+    return stream_optimize_with_qwen_plus(api_key, system_prompt, user_prompt)
+
+
+def optimize_prompt_for_image(api_key: str, original_prompt: str):
+    """文生图提示词优化
+
+    流程：
+    1. 使用 qwen-plus 进行提示词优化（流式输出）
+
+    Args:
+        api_key: API Key
+        original_prompt: 用户输入的原始提示词
+
+    Returns:
+        流式响应
+    """
+    # 构建系统提示词
+    system_prompt = """
+    # 角色
+    你是一个文生图提示词优化的AI助手，基于用户输入的提示词，根据文生图提示词最佳实践进行优化
+    
+    # 任务
+    用户提供了一个简短的提示词，你需要参照提示词最佳实践，优化提示词
+    
+    # 要求
+    - 提示词内容扩写要基于用户的输入来展开，允许基于提示词最佳实践和提示词词典，做适当的补充
+    - 提示词词典作为参考，可使用词典以外的关键词
+    
+    # 提示词最佳实践
+    ## 基础公式
+    提示词 = 主体 + 场景 + 风格
+    主体：主体是图片内容的主要表现对象，可以是人、动物、植物、物品或非物理真实存在的想象之物。
+    场景：场景是主体所处的环境，包括室内或室外、季节、天气、光线等可以是物理存在的真实空间或想象出来的虚构场景。
+    风格：选择或定义图像的艺术风格，如写实，抽象等，有助于模型生成具有特定视觉效果的图像。
+    
+    ## 进阶公式
+    提示词 = 主体（主体描述）+ 场景（场景描述）+ 风格（定义风格）+ 镜头语言 + 氛围词 + 细节修饰
+    主体描述：确定主体清晰地描述图像中的主体，包括其特征、动作等。例如，“一个可爱的10岁中国小女孩，穿着红色衣服”。
+    场景描述：场景描述是对主体所处环境特征细节的描述，可通过形容词或短句列举。
+    定义风格：定义风格是明确地描述图像所应具有的特定艺术风格、表现手法或视觉特征。例如，“水彩风格”、“漫画风格”常见风格化详见下方提示词词典。
+    镜头语言：镜头语言包含景别、视角等，常见镜头语言详见提示词词典。
+    氛围词：氛围词是对预期画面氛围的描述，例如“梦幻”、“孤独”、“宏伟”，常见氛围词详见提示词词典。
+    细节修饰：细节修饰是对画面进一步的精细化和优化，以增强图像的细节表现力、丰富度和美感。例如“光源的位置”、“道具搭配”、“环境细节”，“高分辨率”等。
+    
+    # 提示词词典
+    ## 景别类型
+    特写、近景、中景、远景
+    ## 视角
+    平视、俯视、仰视、航拍
+    ## 镜头拍摄类型
+    微距、超广角、长焦、鱼眼
+    ## 风格
+    3D卡通、废土风、点彩画、超现实、水彩、粘土、写实、陶瓷、3D、水墨、折纸、工笔、国风水墨
+    ## 光线
+    自然光、逆光、霓虹灯、氛围光
+    
+    # 提示词样例
+    - 25岁中国女孩，圆脸，看着镜头，优雅的民族服装，商业摄影，室外，电影级光照，半身特写，精致的淡妆，锐利的边缘。
+    - 由羊毛毡制成的大熊猫，头戴大檐帽，穿着蓝色警服马甲，扎着腰带，携带警械装备，戴着蓝色手套，穿着皮鞋，大步奔跑姿态，毛毡效果，周围是动物王国城市街道商户，高级滤镜，路灯，动物王国，奇妙童趣，憨态可掬，夜晚，明亮，自然，可爱，4K，毛毡材质，摄影镜头，居中构图，毛毡风格，皮克斯风格，逆光。				
+    
+    # 输出
+    优化后的提示词，以纯文本格式输出，不要有任何解释
+    """
+
+    # 用户提示词就是原始输入
+    user_prompt = original_prompt
+
+    # 调用 qwen-plus 进行流式优化
+    return stream_optimize_with_qwen_plus(api_key, system_prompt, user_prompt)
+
+
+def optimize_prompt_for_text2video(api_key: str, original_prompt: str):
+    """文生视频提示词优化
+    
+    流程：
+    1. 使用 qwen-plus 进行提示词优化（流式输出）
+    
+    Args:
+        api_key: API Key
+        original_prompt: 用户输入的原始提示词
+        
+    Returns:
+        流式响应
+    """
+    # 构建系统提示词
+    system_prompt = """
+    # 角色
+    你是一个文生视频提示词优化的AI助手，基于用户输入的提示词，根据文生视频提示词最佳实践进行优化
+    
+    # 任务
+    用户提供了一个简短的提示词，你需要参照提示词最佳实践，优化提示词
+    
+    # 要求
+    - 提示词内容扩写要基于用户的输入内容来展开，如果用户输入缺失了提示词公式的某些部分，允许基于提示词最佳实践和提示词词典，做适当的补充
+    - 提示词词典作为参考，可以进行适当发挥，使用词典以外的关键词
+    
+    # 提示词最佳实践
+    ## 基础公式
+    提示词 = 主体 + 场景 + 运动
+    主体：主体是视频内容的主要表现对象，可以是人、动物、植物、物品或非物理真实存在的想象物体。
+    场景：场景是主体所处的环境，包含背景、前景，可以是物理存在的真实空间或想象出来的虚构场景。
+    运动：运动包含主体的具体运动和非主体的运动状态，可以是静止、小幅度运动、大幅度运动、局部运动或整体动势。
+    
+    ## 进阶公式
+    提示词 = 主体（主体描述）+ 场景（场景描述）+ 运动（运动描述）+ 美学控制 + 风格化
+    主体描述：主体描述是对主体外观特征细节的描述，可通过形容词或短句列举，例如“一位身着少数民族服饰的黑发苗族少女”、“一位来自异世界的飞天仙子，身着破旧却华丽的服饰，背后展开一对由废墟碎片构成的奇异翅膀”。
+    场景描述：场景描述是对主体所处环境特征细节的描述，可通过形容词或短句列举。
+    运动描述：运动描述是对运动特征细节的描述，包含运动的幅度、速率和运动作用的效果，例如“猛烈地摇摆”、“缓慢地移动”、“打碎了玻璃”。
+    美学控制：包含光源、光线环境、景别、视角、镜头、运镜等，常见镜头语言详见下方提示词词典。
+    风格化：风格化是对画面风格语言的描述，例如“赛博朋克”、“勾线插画”、“废土风格”，常见风格化详见下方提示词词典。
+    
+    
+    # 提示词词典
+    ## 电影美学控制
+    ### 光源类型
+    日光、人工光、月光、实用光、火光、荧光、阴天光、混合光、晴天光
+    ### 光线类型
+    柔光、硬光、顶光、侧光、背光、底光、边缘光、剪影、低对比度、高对比度
+    ### 时间段
+    白天、夜晚、黄昏、日落、黎明、日出
+    ### 景别
+    特写、近景、中景、中近景、中全景、全景、广角
+    ### 构图
+    中心构图、平衡构图、右/左侧重构图、对称构图、短边构图
+    ### 镜头
+    #### 镜头焦段
+    中焦距、广角、长焦、望远、超广角-鱼眼
+    #### 机位角度
+    过肩角度、高角度、低角度、倾斜角度、航拍、俯视角度
+    #### 镜头类型
+    干净的单人镜头、双人镜头、三人镜头、群像镜头、定场镜头
+    ### 色调
+    暖色调、冷色调、高饱和度、低饱和度
+    
+    ## 动态控制
+    ### 运动
+    街舞、跑步、滑滑板、踢足球、网球、乒乓球、滑雪、篮球、橄榄球、顶碗舞、侧手翻
+    ### 人物情绪
+    愤怒、恐惧、高兴、悲伤、惊讶
+    ### 基础运镜
+    镜头推进、镜头拉远、镜头向右移动、镜头向左移动、镜头上摇
+    ### 高级运镜
+    手持镜头、复合运镜、跟随镜头、环绕运镜
+    
+    ## 风格化表现
+    ### 视觉风格
+    毛毡风格、3D卡通、像素风格、木偶动画、3D游戏、黏土风格、二次元、水彩画、黑白动画、油画风格
+    ### 特效镜头
+    移轴摄影、延时拍摄
+    
+    
+    # 提示词样例
+    - 边缘光，低对比度，中近景，日光，左侧重构图，干净的单人镜头，暖色调，柔光，晴天光，侧光，白天，一个年轻的女孩坐在高草丛生的田野中，两条毛发蓬松的小毛驴站在她身后。女孩大约十一二岁，穿着简单的碎花裙子，头发扎成两条麻花辫，脸上带着纯真的笑容。她双腿交叉坐下，双手轻轻抚弄身旁的野花。小毛驴体型健壮，耳朵竖起，好奇地望着镜头方向。阳光洒在田野上，营造出温暖自然的画面感。
+    - 高角度拍摄，日光，超广角-鱼眼，干净的单人镜头，混合色调，白天。俯拍一个外国男人坐在一辆橙色出租车后座上的近景。他穿着一件黑色外套和灰色毛衣，他的目光看向车窗外，表情严肃而深思。出租车正在行驶中，背景是一条城市街道，可以看到其他车辆和建筑物。男子的腿上放着一个银色的支架，上面有两个把手。他的手放在膝盖上，手指轻轻敲击着膝盖。
+    
+    # 输出
+    优化后的提示词，以纯文本格式输出，不要有任何解释"""
+
+    
+    # 用户提示词就是原始输入
+    user_prompt = original_prompt
+    
+    # 调用 qwen-plus 进行流式优化
+    return stream_optimize_with_qwen_plus(api_key, system_prompt, user_prompt)
+
+
+def stream_optimize_with_qwen_plus(api_key: str, system_prompt: str, user_prompt: str):
+    """使用 qwen-plus 进行流式提示词优化
+
+    Args:
+        api_key: API Key
+        system_prompt: 系统提示词
+        user_prompt: 用户提示词
+
+    Returns:
+        流式响应
+    """
+    def generate():
+        """生成器函数，用于流式输出"""
+        try:
+            # 调用通义千问API（流式）
+            client = OpenAI(
+                api_key=api_key,
+                base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            )
+
+            completion = client.chat.completions.create(
+                model="qwen-plus",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.7,
+                stream=True,
+                stream_options={"include_usage": True}
+            )
+
+            # 流式输出每个片段
+            for chunk in completion:
+                if chunk.choices:
+                    content = chunk.choices[0].delta.content or ""
+                    if content:
+                        # 使用SSE格式发送数据
+                        yield f"data: {content}\n\n"
+                elif chunk.usage:
+                    # 发送使用量信息（可选）
+                    import json
+                    usage_info = {
+                        "type": "usage",
+                        "prompt_tokens": chunk.usage.prompt_tokens,
+                        "completion_tokens": chunk.usage.completion_tokens,
+                        "total_tokens": chunk.usage.total_tokens
+                    }
+                    yield f"data: {json.dumps(usage_info)}\n\n"
+
+            # 发送结束信号
+            yield "data: [DONE]\n\n"
+
+        except Exception as e:
+            import json
+            error_msg = {"type": "error", "message": str(e)}
+            yield f"data: {json.dumps(error_msg)}\n\n"
+            print(f"流式优化提示词失败: {e}")
+            import traceback
+            traceback.print_exc()
+
+    # 返回流式响应
+    return Response(
+        generate(),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no'
+        }
+    )
+
+
+def analyze_image_with_qwen_vl(api_key: str, image_path: str) -> str:
+    """使用 qwen-vl 模型识别图片内容
+
+    Args:
+        api_key: API Key
+        image_path: 图片本地路径
+
+    Returns:
+        图片内容描述
+    """
+    try:
+        import base64
+
+        # 读取图片并转为 base64
+        with open(image_path, 'rb') as f:
+            image_data = base64.b64encode(f.read()).decode('utf-8')
+
+        # 获取图片扩展名
+        ext = os.path.splitext(image_path)[1].lower()
+        mime_type_map = {
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.png': 'image/png',
+            '.webp': 'image/webp',
+            '.bmp': 'image/bmp'
+        }
+        mime_type = mime_type_map.get(ext, 'image/jpeg')
+
+        # 调用 qwen-vl API
+        client = OpenAI(
+            api_key=api_key,
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        )
+
+        completion = client.chat.completions.create(
+            model="qwen-vl-max-latest",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{mime_type};base64,{image_data}"
+                            }
+                        },
+                        {
+                            "type": "text",
+                            "text": "请详细描述这张图片的内容，包括：主体对象、场景环境、色彩氛围、构图特点等。用简洁的语言描述，不超过200字。"
+                        }
+                    ]
+                }
+            ],
+            temperature=0.3,
+        )
+
+        description = completion.choices[0].message.content.strip()
+        print(f"[INFO] 图片识别结果: {description}")
+        return description
+
+    except Exception as e:
+        print(f"[ERROR] qwen-vl 图片识别失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return ""
+
+
+@app.route('/api/regenerate-task', methods=['POST'])
+def regenerate_task():
+    """重新生成任务 - 使用相同配置创建新任务 (图生视频)"""
+    try:
+        api_key = get_api_key()
+        api_key_hash = get_api_key_hash()
+
+        if not api_key or not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+
+        data = request.get_json()
+        task_id = data.get('task_id')
+        task_type = data.get('task_type', 'i2v')  # 默认为图生视频
+        
+        if not task_id:
+            return jsonify({'success': False, 'message': '任务ID不能为空'})
+
+        # 获取原始任务信息
+        cache_service = CacheService(api_key_hash)
+        
+        # 根据任务类型获取任务
+        if task_type == 't2i':
+            original_task = cache_service.get_t2i_task(task_id)
+        elif task_type == 'i2i':
+            original_task = cache_service.get_i2i_task(task_id)
+        elif task_type == 'kf2v':
+            original_task = cache_service.get_kf2v_task(task_id)
+        elif task_type == 't2v':
+            original_task = cache_service.get_t2v_task(task_id)
+        elif task_type == 'r2v':
+            original_task = cache_service.get_r2v_task(task_id)
+        else:  # i2v
+            original_task = cache_service.get_task(task_id)
+        
+        if not original_task:
+            return jsonify({'success': False, 'message': '找不到原始任务'})
+
+        # 创建视频服务
+        video_service = VideoService(api_key)
+
+        # 获取原始任务的生成数量
+        batch_total = original_task.get('batch_total', 1)
+        
+        # 根据任务类型创建新任务
+        if task_type == 't2i':
+            # 文生图任务需要批量创建
+            created_tasks = []
+            for i in range(batch_total):
+                task_info = video_service.create_t2i_task(
+                    prompt=original_task.get('prompt', ''),
+                    model=original_task.get('model', 'wan2.5-t2i-preview'),
+                    size=original_task.get('size', '1024*1024'),
+                    n=original_task.get('n', 1),
+                    negative_prompt=original_task.get('negative_prompt', ''),
+                    prompt_extend=original_task.get('prompt_extend', True),
+                    watermark=original_task.get('watermark', False)
+                )
+                if task_info:
+                    # wan2.6-t2i是同步接口，直接返回图片，需要下载到本地
+                    if task_info.get('model') == 'wan2.6-t2i' and task_info.get('task_status') == 'SUCCEEDED':
+                        if task_info.get('image_urls'):
+                            local_filenames = cache_service.download_t2i_images(task_info['task_id'], task_info['image_urls'])
+                            if local_filenames:
+                                local_image_urls = [f'/api/t2i-image/{api_key_hash}/{fn}' for fn in local_filenames]
+                                task_info['local_image_urls'] = local_image_urls
+                                task_info['local_filenames'] = local_filenames
+                                print(f"[INFO] wan2.6-t2i图片已保存到本地: {local_filenames}")
+                    created_tasks.append(task_info)
+            
+            # 使用第一个任务作为返回任务
+            task_info = created_tasks[0] if created_tasks else None
+            
+        elif task_type == 'i2i':
+            # 获取参考图片路径
+            reference_image_paths = []
+            reference_image_filenames = []
+            if original_task.get('reference_images'):
+                for img_filename in original_task['reference_images']:
+                    img_path = os.path.join(Config.UPLOAD_I2I_DIR, api_key_hash, img_filename)
+                    if os.path.exists(img_path):
+                        reference_image_paths.append(img_path)
+                        reference_image_filenames.append(img_filename)
+            else:
+                # 如果原始任务没有reference_images字段，尝试从image_filenames字段获取
+                # 这是为了兼容旧版本的任务数据
+                image_filenames = original_task.get('image_filenames', [])
+                for img_filename in image_filenames:
+                    img_path = os.path.join(Config.UPLOAD_I2I_DIR, api_key_hash, img_filename)
+                    if os.path.exists(img_path):
+                        reference_image_paths.append(img_path)
+                        reference_image_filenames.append(img_filename)
+            
+            # 图生图任务需要批量创建
+            created_tasks = []
+            # 获取原始任务的n参数（每个任务生成的图片数量）
+            n_per_task = original_task.get('n', 1)
+            for i in range(batch_total):
+                task_info = video_service.create_i2i_task(
+                    image_paths=reference_image_paths,
+                    prompt=original_task.get('prompt', ''),
+                    model=original_task.get('model', 'wan2.5-i2i-preview'),
+                    size=original_task.get('size') if original_task.get('size') != '保持原图比例' else None,
+                    n=n_per_task,
+                    prompt_extend=original_task.get('prompt_extend', True),
+                    negative_prompt=original_task.get('negative_prompt', '')
+                )
+                if task_info:
+                    # 添加参考图片文件名到任务信息中
+                    task_info['reference_images'] = reference_image_filenames
+                    created_tasks.append(task_info)
+            
+            # 使用第一个任务作为返回任务
+            task_info = created_tasks[0] if created_tasks else None
+            
+        elif task_type == 'kf2v':
+            # 获取首尾帧图片路径
+            first_frame_path = os.path.join(Config.UPLOAD_KF2V_DIR, api_key_hash, original_task['first_frame_filename'])
+            last_frame_path = os.path.join(Config.UPLOAD_KF2V_DIR, api_key_hash, original_task['last_frame_filename'])
+            
+            # 首尾帧任务需要批量创建
+            created_tasks = []
+            for i in range(batch_total):
+                task_info = video_service.create_kf2v_task(
+                    first_frame_path=first_frame_path,
+                    last_frame_path=last_frame_path,
+                    prompt=original_task.get('prompt', ''),
+                    model=original_task.get('model', 'wan2.2-kf2v-flash'),
+                    resolution=original_task.get('resolution', '480P'),
+                    negative_prompt=original_task.get('negative_prompt', ''),
+                    prompt_extend=original_task.get('prompt_extend', True)
+                )
+                if task_info:
+                    created_tasks.append(task_info)
+            
+            # 使用第一个任务作为返回任务
+            task_info = created_tasks[0] if created_tasks else None
+            
+        elif task_type == 't2v':
+            # 文生视频任务需要批量创建
+            created_tasks = []
+            for i in range(batch_total):
+                task_info = video_service.create_t2v_task(
+                    prompt=original_task.get('prompt', ''),
+                    model=original_task.get('model', 'wan2.6-t2v'),
+                    resolution=original_task.get('resolution', '720P'),
+                    duration=int(original_task.get('duration', 5)),
+                    audio=original_task.get('audio', False),
+                    audio_url=original_task.get('audio_url', ''),
+                    negative_prompt=original_task.get('negative_prompt', ''),
+                    shot_type=original_task.get('shot_type', 'single')
+                )
+                if task_info:
+                    created_tasks.append(task_info)
+
+            # 使用第一个任务作为返回任务
+            task_info = created_tasks[0] if created_tasks else None
+
+        elif task_type == 'r2v':
+            # 参考生视频任务需要批量创建
+            reference_video_filenames = original_task.get('reference_video_filenames', [])
+            reference_video_paths = []
+            for filename in reference_video_filenames:
+                video_path = os.path.join(Config.UPLOAD_R2V_DIR, api_key_hash, filename)
+                if os.path.exists(video_path):
+                    reference_video_paths.append(video_path)
+            
+            created_tasks = []
+            for i in range(batch_total):
+                task_info = video_service.create_r2v_task(
+                    reference_video_paths=reference_video_paths,
+                    prompt=original_task.get('prompt', ''),
+                    model=original_task.get('model', 'wan2.6-r2v'),
+                    size=original_task.get('size', '1280*720'),
+                    duration=int(original_task.get('duration', 5)),
+                    shot_type=original_task.get('shot_type', 'single'),
+                    negative_prompt=original_task.get('negative_prompt', ''),
+                    watermark=original_task.get('watermark', False),
+                    audio=original_task.get('audio', True)
+                )
+                if task_info:
+                    created_tasks.append(task_info)
+
+            # 使用第一个任务作为返回任务
+            task_info = created_tasks[0] if created_tasks else None
+
+        else:  # i2v
+            # 图生视频任务需要批量创建
+            created_tasks = []
+            image_path = os.path.join(Config.UPLOAD_I2V_DIR, api_key_hash, original_task['image_filename'])
+            for i in range(batch_total):
+                task_info = video_service.create_task(
+                    image_path=image_path,
+                    prompt=original_task.get('prompt', ''),
+                    model=original_task.get('model', 'wan2.6-i2v'),
+                    resolution=original_task.get('resolution', '720P'),
+                    duration=int(original_task.get('duration', 5)),
+                    audio_url=original_task.get('audio_url', ''),
+                    negative_prompt=original_task.get('negative_prompt', ''),
+                    prompt_extend=original_task.get('prompt_extend', True),
+                    watermark=original_task.get('watermark', False),
+                    audio=original_task.get('audio', False)  # 修复：默认值应为False而不是True
+                )
+                if task_info:
+                    created_tasks.append(task_info)
+            
+            # 使用第一个任务作为返回任务
+            task_info = created_tasks[0] if created_tasks else None
+
+        if task_info:
+            # 保存所有创建的任务信息
+            saved_tasks = []
+            
+            # 为批量任务生成新的批次ID
+            import uuid
+            new_batch_id = str(uuid.uuid4()) if batch_total > 1 else None
+            
+            for i, task in enumerate(created_tasks):
+                # 添加任务类型信息
+                task['task_type'] = task_type
+                
+                # 添加批次信息
+                task['batch_id'] = new_batch_id
+                task['batch_index'] = i + 1
+                task['batch_total'] = batch_total
+
+                # 保存任务信息到对应的任务类型
+                if task_type == 't2i':
+                    cache_service.add_t2i_task(task)
+                elif task_type == 'i2i':
+                    # 添加参考图片文件名和URL（如果还没有的话）
+                    if (original_task.get('reference_images') or original_task.get('image_filenames')) and not task.get('reference_image_urls'):
+                        # 优先使用reference_images，如果没有则使用image_filenames
+                        ref_images = original_task.get('reference_images') or original_task.get('image_filenames', [])
+                        # 添加参考图片URL到任务信息中
+                        reference_image_urls = []
+                        for filename in ref_images:
+                            reference_image_urls.append(f'/api/image/i2i/{api_key_hash}/{filename}')
+                        task['reference_images'] = ref_images
+                        task['reference_image_urls'] = reference_image_urls
+                    cache_service.add_i2i_task(task)
+
+                elif task_type == 'kf2v':
+                    # 添加首尾帧文件名
+                    task['first_frame_filename'] = original_task['first_frame_filename']
+                    task['last_frame_filename'] = original_task['last_frame_filename']
+                    cache_service.add_kf2v_task(task)
+                elif task_type == 't2v':
+                    # 添加文生视频任务
+                    cache_service.add_t2v_task(task)
+                elif task_type == 'r2v':
+                    # 添加参考生视频任务
+                    task['reference_video_filenames'] = original_task.get('reference_video_filenames', [])
+                    cache_service.add_r2v_task(task)
+                else:  # i2v
+                    task['image_filename'] = original_task['image_filename']
+                    cache_service.add_task(task)
+                
+                saved_tasks.append(task)
+
+            # 添加图片URL到返回数据（仅适用于i2v，使用第一个任务）
+            if task_type == 'i2v':
+                saved_tasks[0]['image_url'] = f'/api/image/i2v/{api_key_hash}/{original_task["image_filename"]}'
+
+            print(f"[INFO] 重新生成任务成功: {saved_tasks[0]['task_id']}")
+            
+            return jsonify({
+                'success': True,
+                'tasks': saved_tasks,
+                'message': '重新生成任务'
+            })
+        else:
+            return jsonify({'success': False, 'message': '重新生成任务失败'})
+
+    except Exception as e:
+        print(f"[ERROR] 重新生成任务失败: {e}")
+        return jsonify({'success': False, 'message': f'重新生成任务失败: {str(e)}'})
+
+
+@app.route('/api/upload-image', methods=['POST'])
+def upload_image():
+    """上传图片 - 图生视频(I2V)专用"""
+    try:
+        api_key_hash = get_api_key_hash()
+        if not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+
+        if 'image' not in request.files:
+            return jsonify({'success': False, 'message': '没有上传文件'})
+
+        file = request.files['image']
+        if file.filename == '':
+            return jsonify({'success': False, 'message': '没有选择文件'})
+
+        if file:
+            # 获取文件扩展名
+            original_filename = file.filename
+            ext = ''
+            if '.' in original_filename:
+                ext = original_filename.rsplit('.', 1)[1].lower()
+
+            # 生成新文件名
+            import uuid
+            timestamp = int(time.time())
+            unique_id = str(uuid.uuid4())[:8]
+            if ext:
+                new_filename = f"{timestamp}_{unique_id}.{ext}"
+            else:
+                new_filename = f"{timestamp}_{unique_id}"
+
+            # 图生视频上传目录
+            user_image_dir = os.path.join(Config.UPLOAD_I2V_DIR, api_key_hash)
+            os.makedirs(user_image_dir, exist_ok=True)
+
+            filepath = os.path.join(user_image_dir, new_filename)
+            file.save(filepath)
+
+            # 同步到磁盘
+            try:
+                os.sync() if hasattr(os, 'sync') else None
+            except:
+                pass
+
+            return jsonify({
+                'success': True,
+                'filename': new_filename,
+                'url': f'/api/image/i2v/{api_key_hash}/{new_filename}'
+            })
+
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'上传失败: {str(e)}'})
+
+
+@app.route('/api/image/<task_type>/<api_key_hash>/<filename>')
+def get_image(task_type, api_key_hash, filename):
+    """获取上传图片 - 支持不同任务类型
+    
+    task_type: i2v(图生视频), kf2v(首尾帧), i2i(图生图)
+    """
+    try:
+        # 根据任务类型选择目录
+        upload_dirs = {
+            'i2v': Config.UPLOAD_I2V_DIR,
+            'kf2v': Config.UPLOAD_KF2V_DIR,
+            'i2i': Config.UPLOAD_I2I_DIR
+        }
+        
+        base_dir = upload_dirs.get(task_type)
+        if not base_dir:
+            return jsonify({'error': '无效的任务类型'}), 400
+        
+        filepath = os.path.join(base_dir, api_key_hash, filename)
+        if os.path.exists(filepath):
+            # 检测MIME类型
+            ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else 'png'
+            mime_types = {
+                'jpg': 'image/jpeg', 'jpeg': 'image/jpeg',
+                'png': 'image/png', 'webp': 'image/webp',
+                'bmp': 'image/bmp', 'gif': 'image/gif'
+            }
+            mimetype = mime_types.get(ext, 'image/png')
+
+            response = make_response(send_file(filepath, mimetype=mimetype))
+            response.headers['Cache-Control'] = 'private, max-age=604800'  # 缓存7天
+            response.headers['ETag'] = f'"{os.path.getmtime(filepath)}-{os.path.getsize(filepath)}"'
+            return response
+        return jsonify({'error': '文件不存在'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/create-task', methods=['POST'])
+def create_task():
+    """创建视频生成任务"""
+    try:
+        api_key = get_api_key()
+        api_key_hash = get_api_key_hash()
+
+        if not api_key or not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+
+        data = request.get_json()
+
+        # 获取图片路径 - 图生视频上传目录
+        image_filename = data.get('image_filename')
+        if not image_filename:
+            return jsonify({'success': False, 'message': '请先上传图片'})
+
+        image_path = os.path.join(Config.UPLOAD_I2V_DIR, api_key_hash, image_filename)
+
+        # 创建视频服务
+        video_service = VideoService(api_key)
+        cache_service = CacheService(api_key_hash)
+
+        # 获取批量数量
+        batch_count = int(data.get('batch_count', 1))
+        batch_count = max(1, min(4, batch_count))  # 限制在1-4之间
+
+        # 生成批次ID
+        import uuid
+        batch_id = str(uuid.uuid4()) if batch_count > 1 else None
+
+        created_tasks = []
+
+        # 批量创建任务
+        for i in range(batch_count):
+            task_info = video_service.create_task(
+                image_path=image_path,
+                prompt=data.get('prompt', ''),
+                model=data.get('model', 'wan2.6-i2v'),
+                resolution=data.get('resolution', '720P'),
+                duration=int(data.get('duration', 5)),
+                audio_url=data.get('audio_url', ''),
+                negative_prompt=data.get('negative_prompt', ''),
+                prompt_extend=data.get('prompt_extend', True),
+                watermark=data.get('watermark', False),
+                audio=data.get('audio', False)  # 修复：默认值应为False而不是True
+            )
+            if task_info:
+                # 添加图片文件名和批次信息
+                task_info['image_filename'] = image_filename
+                task_info['batch_id'] = batch_id
+                task_info['batch_index'] = i + 1
+                task_info['batch_total'] = batch_count
+
+                # 保存任务信息（包含request_id）
+                cache_service.add_task(task_info)
+
+                # 添加图片URL到返回数据
+                task_info['image_url'] = f'/api/image/i2v/{api_key_hash}/{image_filename}'
+                created_tasks.append(task_info)
+
+                print(f"[INFO] 创建任务 {i + 1}/{batch_count}: {task_info['task_id']}")
+
+        if created_tasks:
+            message = f'成功创建{batch_count}个任务' if batch_count > 1 else '任务创建成功'
+            return jsonify({
+                'success': True,
+                'tasks': created_tasks,
+                'batch_id': batch_id,
+                'message': message
+            })
+        else:
+            return jsonify({'success': False, 'message': '创建任务失败'})
+
+    except Exception as e:
+        print(f"[ERROR] 创建任务失败: {e}")
+        return jsonify({'success': False, 'message': f'创建任务失败: {str(e)}'})
+
+
+@app.route('/api/tasks', methods=['GET'])
+def get_tasks():
+    """获取任务列表 - 支持分页（高性能版本）"""
+    try:
+        api_key_hash = get_api_key_hash()
+        if not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+
+        # 分页参数
+        page = request.args.get('page', 1, type=int)
+        limit = request.args.get('limit', 10, type=int)
+        limit = min(limit, 50)  # 限制最大每页数量
+
+        cache_service = CacheService(api_key_hash)
+        
+        # 使用高性能分页方法，只加载当前页数据
+        tasks, total, has_more = cache_service.get_tasks_paginated(page, limit)
+
+        # 调试日志
+        print(f"[DEBUG] Tasks page {page}, limit {limit}, total {total}, returned {len(tasks)}")
+
+        # 为每个任务添加图片和视频URL
+        for task in tasks:
+            if task.get('image_filename'):
+                task['image_url'] = f"/api/image/i2v/{api_key_hash}/{task['image_filename']}"
+            if task.get('task_status') == 'SUCCEEDED':
+                task['local_video_path'] = f"/api/video/i2v/{api_key_hash}/{task['task_id']}.mp4"
+
+        return jsonify({
+            'success': True,
+            'tasks': tasks,
+            'page': page,
+            'limit': limit,
+            'total': total,
+            'has_more': has_more
+        })
+
+    except Exception as e:
+        print(f"[ERROR] 获取任务列表失败: {e}")
+        return jsonify({'success': False, 'message': f'获取任务列表失败: {str(e)}'})
+
+
+@app.route('/api/task/<task_id>', methods=['GET'])
+def get_task_status(task_id):
+    """获取任务状态"""
+    try:
+        api_key = get_api_key()
+        api_key_hash = get_api_key_hash()
+
+        if not api_key or not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+
+        video_service = VideoService(api_key)
+        cache_service = CacheService(api_key_hash)
+
+        # 查询任务状态
+        result = video_service.get_task_status(task_id)
+
+        # 调试日志: 打印返回的任务信息
+        print(f"[DEBUG] Task Status Result: {result}")
+
+        if result:
+            # 更新缓存
+            cache_service.update_task(task_id, result)
+
+            # 如果任务完成，下载视频
+            if result.get('task_status') == 'SUCCEEDED' and result.get('video_url'):
+                video_path = cache_service.download_video(task_id, result['video_url'])
+                if video_path:
+                    result['local_video_path'] = f'/api/video/i2v/{api_key_hash}/{task_id}.mp4'
+
+            # 调试日志: 打印最终返回的数据
+            print(f"[DEBUG] Returning task data: {result}")
+            return jsonify({'success': True, 'task': result})
+        else:
+            return jsonify({'success': False, 'message': '查询任务失败'})
+
+    except Exception as e:
+        print(f"[ERROR] 查询任务失败: {e}")
+        return jsonify({'success': False, 'message': f'查询任务失败: {str(e)}'})
+
+
+@app.route('/api/video/<task_type>/<api_key_hash>/<filename>')
+def get_video(task_type, api_key_hash, filename):
+    """获取视频文件 - 支持不同任务类型
+    
+    task_type: i2v(图生视频), kf2v(首尾帧), r2v(参考生视频)
+    """
+    try:
+        # 根据任务类型选择目录
+        dirs = {
+            'i2v': Config.OUTPUT_I2V_DIR,
+            'kf2v': Config.OUTPUT_KF2V_DIR,
+            'r2v': Config.UPLOAD_R2V_DIR if filename.find('.mp4') == -1 or not os.path.exists(os.path.join(Config.OUTPUT_R2V_DIR, api_key_hash, filename)) else Config.OUTPUT_R2V_DIR
+        }
+        
+        # 对于r2v，需要区分是上传的参考视频还是生成的视频
+        if task_type == 'r2v':
+            # 先尝试输出目录
+            output_path = os.path.join(Config.OUTPUT_R2V_DIR, api_key_hash, filename)
+            if os.path.exists(output_path):
+                filepath = output_path
+            else:
+                # 如果输出目录不存在，尝试上传目录
+                filepath = os.path.join(Config.UPLOAD_R2V_DIR, api_key_hash, filename)
+        else:
+            base_dir = dirs.get(task_type)
+            if not base_dir:
+                return jsonify({'error': '无效的任务类型'}), 400
+
+            filepath = os.path.join(base_dir, api_key_hash, filename)
+
+        return serve_video_with_range(filepath)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/video-poster/<api_key_hash>/<task_id>')
+def get_video_poster(api_key_hash, task_id):
+    """获取视频封面图，如果不存在则自动生成"""
+    try:
+        cache_service = CacheService(api_key_hash)
+        
+        # 尝试获取或生成封面图
+        poster_path = cache_service.get_or_generate_poster(task_id)
+        
+        if poster_path and os.path.exists(poster_path):
+            # 返回封面图，带缓存头
+            response = make_response(send_file(poster_path, mimetype='image/jpeg'))
+            response.headers['Cache-Control'] = 'public, max-age=2592000'  # 缓存30天
+            response.headers['ETag'] = f'"{os.path.getmtime(poster_path)}"'
+            return response
+        else:
+            # 封面图生成失败，返回透明占位图
+            return '', 204
+            
+    except Exception as e:
+        print(f"[ERROR] 获取视频封面失败: {e}")
+        return '', 204
+
+
+def serve_video_with_range(filepath, mimetype='video/mp4'):
+    """
+    支持Range请求的视频服务
+    解决NAS挂载目录读取慢的问题，实现：
+    1. 分段传输 - 不用一次读取整个文件
+    2. 进度条拖动 - 支持seek操作
+    3. 浏览器缓存 - 减少重复请求
+    4. 完整播放 - 支持完整视频流式加载
+    """
+    if not os.path.exists(filepath):
+        return jsonify({'error': '文件不存在'}), 404
+
+    file_size = os.path.getsize(filepath)
+
+    # 解析Range头
+    range_header = request.headers.get('Range', None)
+    
+    print(f"[VIDEO DEBUG] 请求文件: {filepath}, 大小: {file_size}, Range: {range_header}")
+
+    if range_header:
+        # 处理Range请求 (如: bytes=0-1024 或 bytes=32768-)
+        byte_start, byte_end = 0, None
+
+        match = range_header.replace('bytes=', '').split('-')
+        if len(match) == 2:
+            if match[0]:
+                byte_start = int(match[0])
+            if match[1]:
+                byte_end = int(match[1])
+
+        if byte_end is None:
+            # 当浏览器请求 bytes=X- 时（没有结束位置），返回到文件末尾
+            byte_end = file_size - 1
+        else:
+            byte_end = min(byte_end, file_size - 1)
+
+        content_length = byte_end - byte_start + 1
+        
+        print(f"[VIDEO DEBUG] Range解析: start={byte_start}, end={byte_end}, content_length={content_length}")
+
+        # 生成流式响应
+        def generate():
+            bytes_sent = 0
+            with open(filepath, 'rb') as f:
+                f.seek(byte_start)
+                remaining = content_length
+                # 使用1MB块读取，提高传输效率
+                chunk_size = 1024 * 1024  # 1MB
+                while remaining > 0:
+                    read_size = min(chunk_size, remaining)
+                    data = f.read(read_size)
+                    if not data:
+                        break
+                    remaining -= len(data)
+                    bytes_sent += len(data)
+                    yield data
+            print(f"[VIDEO DEBUG] 流式传输完成: 已发送 {bytes_sent} 字节")
+
+        response = Response(
+            generate(),
+            status=206,  # Partial Content
+            mimetype=mimetype,
+            direct_passthrough=True
+        )
+        response.headers['Content-Range'] = f'bytes {byte_start}-{byte_end}/{file_size}'
+        response.headers['Content-Length'] = content_length
+        response.headers['Accept-Ranges'] = 'bytes'
+        # 减少缓存时间，方便调试
+        response.headers['Cache-Control'] = 'no-cache'
+        response.headers['ETag'] = f'"{os.path.getmtime(filepath)}-{file_size}"'
+        
+        print(f"[VIDEO DEBUG] 响应头: Content-Range=bytes {byte_start}-{byte_end}/{file_size}, Content-Length={content_length}")
+        return response
+
+    else:
+        # 非Range请求，返回完整文件（但使用流式传输）
+        print(f"[VIDEO DEBUG] 非Range请求，返回完整文件: {file_size} 字节")
+        
+        def generate_full():
+            bytes_sent = 0
+            with open(filepath, 'rb') as f:
+                chunk_size = 1024 * 1024  # 1MB块
+                while True:
+                    data = f.read(chunk_size)
+                    if not data:
+                        break
+                    bytes_sent += len(data)
+                    yield data
+            print(f"[VIDEO DEBUG] 完整传输完成: 已发送 {bytes_sent} 字节")
+
+        response = Response(
+            generate_full(),
+            status=200,
+            mimetype=mimetype,
+            direct_passthrough=True
+        )
+        response.headers['Content-Length'] = file_size
+        response.headers['Accept-Ranges'] = 'bytes'
+        response.headers['Cache-Control'] = 'no-cache'
+        response.headers['ETag'] = f'"{os.path.getmtime(filepath)}-{file_size}"'
+        return response
+
+
+# ========== 首尾帧生视频路由 ==========
+
+@app.route('/kf2v')
+def kf2v_page():
+    """首尾帧生视频页面"""
+    if 'api_key_hash' not in session:
+        return render_template('index.html')
+    return render_template('kf2v.html')
+
+
+@app.route('/text2image')
+def text2image_page():
+    """文生图页面"""
+    if 'api_key_hash' not in session:
+        return render_template('index.html')
+    return render_template('text2image.html')
+
+
+@app.route('/image2image')
+def image2image_page():
+    """图生图页面"""
+    if 'api_key_hash' not in session:
+        return render_template('index.html')
+    return render_template('image2image.html')
+
+
+@app.route('/reference2video')
+def reference2video_page():
+    """参考生视频页面"""
+    if 'api_key_hash' not in session:
+        return render_template('index.html')
+    return render_template('reference2video.html')
+
+
+@app.route('/api/upload-i2i-image', methods=['POST'])
+def upload_i2i_image():
+    """上传图片 - 图生图(I2I)专用"""
+    try:
+        api_key_hash = get_api_key_hash()
+        if not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+
+        if 'image' not in request.files:
+            return jsonify({'success': False, 'message': '没有上传文件'})
+
+        file = request.files['image']
+        if file.filename == '':
+            return jsonify({'success': False, 'message': '没有选择文件'})
+
+        if file:
+            # 获取文件扩展名
+            original_filename = file.filename
+            ext = ''
+            if '.' in original_filename:
+                ext = original_filename.rsplit('.', 1)[1].lower()
+
+            # 生成新文件名
+            import uuid
+            timestamp = int(time.time())
+            unique_id = str(uuid.uuid4())[:8]
+            if ext:
+                new_filename = f"{timestamp}_{unique_id}.{ext}"
+            else:
+                new_filename = f"{timestamp}_{unique_id}"
+
+            # 图生图上传目录
+            user_image_dir = os.path.join(Config.UPLOAD_I2I_DIR, api_key_hash)
+            os.makedirs(user_image_dir, exist_ok=True)
+
+            filepath = os.path.join(user_image_dir, new_filename)
+            file.save(filepath)
+
+            # 同步到磁盘
+            try:
+                os.sync() if hasattr(os, 'sync') else None
+            except:
+                pass
+
+            return jsonify({
+                'success': True,
+                'filename': new_filename,
+                'url': f'/api/image/i2i/{api_key_hash}/{new_filename}'
+            })
+
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'上传失败: {str(e)}'})
+
+
+@app.route('/api/create-i2i-task', methods=['POST'])
+def create_i2i_task():
+    """创建图生图任务"""
+    try:
+        api_key = get_api_key()
+        api_key_hash = get_api_key_hash()
+
+        if not api_key or not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+
+        data = request.get_json()
+
+        image_filenames = data.get('image_filenames', [])
+        if not image_filenames or len(image_filenames) == 0:
+            return jsonify({'success': False, 'message': '请先上传参考图片'})
+
+        if len(image_filenames) > 3:
+            return jsonify({'success': False, 'message': '最多只能上传3张参考图片'})
+
+        image_paths = []
+        for filename in image_filenames:
+            image_path = os.path.join(Config.UPLOAD_I2I_DIR, api_key_hash, filename)
+            if not os.path.exists(image_path):
+                return jsonify({'success': False, 'message': f'图片文件不存在: {filename}'})
+            image_paths.append(image_path)
+
+        prompt = data.get('prompt', '').strip()
+        if not prompt:
+            return jsonify({'success': False, 'message': '请输入提示词'})
+
+        video_service = VideoService(api_key)
+        cache_service = CacheService(api_key_hash)
+
+        batch_count = int(data.get('batch_count', 1))
+        batch_count = max(1, min(4, batch_count))
+
+        import uuid
+        batch_id = str(uuid.uuid4()) if batch_count > 1 else None
+        
+        model = data.get('model', 'wan2.5-i2i-preview')
+        
+        # 为wan2.6-image创建后台任务回调函数（如果需要）
+        # wan2.6-image使用异步接口，不需要回调
+
+        # 为qwen-image-edit-plus创建后台任务回调函数
+        def qwen_task_callback(task_id: str, update_data: dict):
+            """qwen-image-edit-plus后台任务完成回调"""
+            try:
+                callback_cache_service = CacheService(api_key_hash)
+                
+                # 如果任务成功，下载图片到本地
+                if update_data.get('task_status') == 'SUCCEEDED' and update_data.get('results'):
+                    image_urls = update_data['results']
+                    local_filenames = callback_cache_service.download_i2i_images(task_id, image_urls)
+                    if local_filenames:
+                        local_image_urls = [f'/api/i2i-image/{api_key_hash}/{fn}' for fn in local_filenames]
+                        update_data['local_image_urls'] = local_image_urls
+                        update_data['local_filenames'] = local_filenames
+                        print(f"[INFO] qwen-image-edit-plus 图片已保存到本地: {local_filenames}")
+                
+                # 更新缓存
+                callback_cache_service.update_i2i_task(task_id, update_data)
+                print(f"[INFO] qwen-image-edit-plus 任务缓存已更新: {task_id}, status={update_data.get('task_status')}")
+            except Exception as e:
+                print(f"[ERROR] qwen-image-edit-plus 回调处理失败: {task_id}, {e}")
+
+        created_tasks = []
+
+        for i in range(batch_count):
+            # 准备wan2.6-image图文混排模式参数
+            callback_param = None
+            if model == 'wan2.6-image':
+                # 通过特殊字典传递enable_interleave和max_images参数
+                callback_param = {
+                    'enable_interleave': data.get('enable_interleave', False),
+                    'max_images': data.get('max_images', 5)
+                }
+            elif model == 'qwen-image-edit-plus':
+                callback_param = qwen_task_callback
+
+            task_info = video_service.create_i2i_task(
+                image_paths=image_paths,
+                prompt=prompt,
+                model=model,
+                size=data.get('size'),  # 可选参数，qwen-image-edit-plus不传递
+                n=1,
+                prompt_extend=data.get('prompt_extend', True),
+                negative_prompt=data.get('negative_prompt', ''),
+                callback=callback_param
+            )
+
+            if task_info:
+                task_info['image_filenames'] = image_filenames
+                task_info['batch_id'] = batch_id
+                task_info['batch_index'] = i + 1
+                task_info['batch_total'] = batch_count
+
+                # 添加参考图片URL到任务信息中
+                reference_image_urls = []
+                for filename in image_filenames:
+                    reference_image_urls.append(f'/api/image/i2i/{api_key_hash}/{filename}')
+                task_info['reference_image_urls'] = reference_image_urls
+
+                cache_service.add_i2i_task(task_info)
+                created_tasks.append(task_info)
+
+                print(f"[INFO] 创建图生图任务 {i + 1}/{batch_count}: {task_info['task_id']}")
+
+        if created_tasks:
+            message = f'成功创建{batch_count}个任务' if batch_count > 1 else '任务创建成功'
+            return jsonify({
+                'success': True,
+                'tasks': created_tasks,
+                'batch_id': batch_id,
+                'message': message
+            })
+        else:
+            return jsonify({'success': False, 'message': '创建任务失败'})
+
+    except Exception as e:
+        print(f"[ERROR] 创建图生图任务失败: {e}")
+        return jsonify({'success': False, 'message': f'创建任务失败: {str(e)}'})
+
+
+@app.route('/api/i2i-tasks', methods=['GET'])
+def get_i2i_tasks():
+    """获取图生图任务列表 - 支持分页（高性能版本）"""
+    try:
+        api_key_hash = get_api_key_hash()
+        if not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+
+        page = request.args.get('page', 1, type=int)
+        limit = request.args.get('limit', 10, type=int)
+        limit = min(limit, 50)
+
+        cache_service = CacheService(api_key_hash)
+        
+        # 使用高性能分页方法
+        tasks, total, has_more = cache_service.get_i2i_tasks_paginated(page, limit)
+
+        return jsonify({
+            'success': True,
+            'tasks': tasks,
+            'page': page,
+            'limit': limit,
+            'total': total,
+            'has_more': has_more
+        })
+
+    except Exception as e:
+        print(f"[ERROR] 获取图生图任务列表失败: {e}")
+        return jsonify({'success': False, 'message': f'获取任务列表失败: {str(e)}'})
+
+
+@app.route('/api/i2i-task/<task_id>', methods=['GET'])
+def get_i2i_task_status(task_id):
+    """获取图生图任务状态"""
+    try:
+        api_key = get_api_key()
+        api_key_hash = get_api_key_hash()
+
+        if not api_key or not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+
+        cache_service = CacheService(api_key_hash)
+        
+        # 先检查缓存中的任务状态
+        cached_task = cache_service.get_i2i_task(task_id)
+        
+        # 如果任务已经完成（SUCCEEDED或FAILED），直接返回缓存数据
+        if cached_task and cached_task.get('task_status') in ['SUCCEEDED', 'FAILED']:
+            return jsonify({'success': True, 'task': cached_task})
+        
+        # qwen-image-edit-plus 任务使用自定义task_id，不需要查询DashScope API
+        # 后台线程完成后会通过回调更新缓存
+        if task_id.startswith('qwen_'):
+            if cached_task:
+                return jsonify({'success': True, 'task': cached_task})
+            return jsonify({'success': False, 'message': '任务不存在'})
+        
+        # 对于未完成的任务，调用DashScope API查询状态
+        video_service = VideoService(api_key)
+        result = video_service.get_task_status(task_id)
+
+        if result:
+            if result.get('task_status') == 'SUCCEEDED' and result.get('results'):
+                image_urls = []
+                for img_result in result['results']:
+                    if img_result.get('url'):
+                        image_urls.append(img_result['url'])
+                result['image_urls'] = image_urls
+
+                # 下载图片到本地存储
+                local_filenames = cache_service.download_i2i_images(task_id, image_urls)
+                if local_filenames:
+                    # 生成本地图片URL
+                    local_image_urls = [f'/api/i2i-image/{api_key_hash}/{fn}' for fn in local_filenames]
+                    result['local_image_urls'] = local_image_urls
+                    result['local_filenames'] = local_filenames
+                    print(f"[INFO] 图生图任务图片已保存到本地: {local_filenames}")
+
+            cache_service.update_i2i_task(task_id, result)
+            return jsonify({'success': True, 'task': result})
+        else:
+            # 如果DashScope API查询失败，返回缓存数据（如果有）
+            if cached_task:
+                return jsonify({'success': True, 'task': cached_task})
+            return jsonify({'success': False, 'message': '查询任务失败'})
+
+    except Exception as e:
+        print(f"[ERROR] 查询图生图任务失败: {e}")
+        return jsonify({'success': False, 'message': f'查询任务失败: {str(e)}'})
+
+
+@app.route('/api/upload-kf2v-image', methods=['POST'])
+def upload_kf2v_image():
+    """上传首尾帧图片"""
+    try:
+        api_key_hash = get_api_key_hash()
+        if not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+
+        if 'image' not in request.files:
+            return jsonify({'success': False, 'message': '没有上传文件'})
+
+        file = request.files['image']
+        frame_type = request.form.get('frame_type', 'first')  # first 或 last
+
+        if file.filename == '':
+            return jsonify({'success': False, 'message': '没有选择文件'})
+
+        if file:
+            # 获取文件扩展名
+            ext = ''
+            if '.' in file.filename:
+                ext = file.filename.rsplit('.', 1)[1].lower()
+
+            # 生成新文件名
+            import uuid
+            timestamp = int(time.time())
+            unique_id = str(uuid.uuid4())[:8]
+            if ext:
+                new_filename = f"{timestamp}_{unique_id}_{frame_type}.{ext}"
+            else:
+                new_filename = f"{timestamp}_{unique_id}_{frame_type}"
+
+            # 首尾帧上传目录
+            user_image_dir = os.path.join(Config.UPLOAD_KF2V_DIR, api_key_hash)
+            os.makedirs(user_image_dir, exist_ok=True)
+
+            filepath = os.path.join(user_image_dir, new_filename)
+            file.save(filepath)
+
+            # 同步到磁盘
+            try:
+                os.sync() if hasattr(os, 'sync') else None
+            except:
+                pass
+
+            return jsonify({
+                'success': True,
+                'filename': new_filename,
+                'url': f'/api/image/kf2v/{api_key_hash}/{new_filename}',
+                'frame_type': frame_type
+            })
+
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'上传失败: {str(e)}'})
+
+
+@app.route('/api/upload-r2v-video', methods=['POST'])
+def upload_r2v_video():
+    """上传参考视频 - R2V专用"""
+    try:
+        api_key_hash = get_api_key_hash()
+        if not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+
+        if 'video' not in request.files:
+            return jsonify({'success': False, 'message': '没有上传文件'})
+
+        file = request.files['video']
+        if file.filename == '':
+            return jsonify({'success': False, 'message': '没有选择文件'})
+
+        if file:
+            # 获取文件扩展名
+            original_filename = file.filename
+            ext = ''
+            if '.' in original_filename:
+                ext = original_filename.rsplit('.', 1)[1].lower()
+
+            # 生成新文件名
+            import uuid
+            timestamp = int(time.time())
+            unique_id = str(uuid.uuid4())[:8]
+            if ext:
+                new_filename = f"{timestamp}_{unique_id}.{ext}"
+            else:
+                new_filename = f"{timestamp}_{unique_id}"
+
+            # 参考生视频上传目录
+            user_video_dir = os.path.join(Config.UPLOAD_R2V_DIR, api_key_hash)
+            os.makedirs(user_video_dir, exist_ok=True)
+
+            filepath = os.path.join(user_video_dir, new_filename)
+            file.save(filepath)
+
+            # 同步到磁盘
+            try:
+                os.sync() if hasattr(os, 'sync') else None
+            except:
+                pass
+
+            return jsonify({
+                'success': True,
+                'filename': new_filename,
+                'url': f'/api/video/r2v/{api_key_hash}/{new_filename}'
+            })
+
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'上传失败: {str(e)}'})
+
+
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/create-r2v-task', methods=['POST'])
+def create_r2v_task():
+    """创建参考生视频任务"""
+    try:
+        api_key = get_api_key()
+        api_key_hash = get_api_key_hash()
+
+        if not api_key or not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+
+        data = request.get_json()
+
+        # 获取参考视频文件名
+        reference_video_filenames = data.get('reference_video_filenames', [])
+        if not reference_video_filenames or len(reference_video_filenames) == 0:
+            return jsonify({'success': False, 'message': '请先上传参考视频'})
+
+        if len(reference_video_filenames) > 3:
+            return jsonify({'success': False, 'message': '最多只能上传3个参考视频'})
+
+        # 构建视频路径列表
+        reference_video_paths = []
+        for filename in reference_video_filenames:
+            video_path = os.path.join(Config.UPLOAD_R2V_DIR, api_key_hash, filename)
+            if not os.path.exists(video_path):
+                return jsonify({'success': False, 'message': f'视频文件不存在: {filename}'})
+            reference_video_paths.append(video_path)
+
+        # 验证提示词
+        prompt = data.get('prompt', '').strip()
+        if not prompt:
+            return jsonify({'success': False, 'message': '请输入提示词'})
+
+        # 创建服务
+        video_service = VideoService(api_key)
+        cache_service = CacheService(api_key_hash)
+
+        # 获取批量数量
+        batch_count = int(data.get('batch_count', 1))
+        batch_count = max(1, min(4, batch_count))  # 限制在1-4之间
+
+        # 生成批次ID
+        import uuid
+        batch_id = str(uuid.uuid4()) if batch_count > 1 else None
+
+        created_tasks = []
+
+        # 批量创建任务
+        for i in range(batch_count):
+            task_info = video_service.create_r2v_task(
+                reference_video_paths=reference_video_paths,
+                prompt=prompt,
+                model=data.get('model', 'wan2.6-r2v'),
+                size=data.get('size', '1280*720'),
+                duration=int(data.get('duration', 5)),
+                shot_type=data.get('shot_type', 'single'),
+                negative_prompt=data.get('negative_prompt', ''),
+                seed=data.get('seed'),
+                watermark=data.get('watermark', False),
+                audio=data.get('audio', True)  # 支持音频参数
+            )
+
+            if task_info:
+                # 添加视频文件名和批次信息
+                task_info['reference_video_filenames'] = reference_video_filenames
+                task_info['batch_id'] = batch_id
+                task_info['batch_index'] = i + 1
+                task_info['batch_total'] = batch_count
+
+                # 保存任务信息
+                cache_service.add_r2v_task(task_info)
+
+                # 添加视频URL到返回数据
+                task_info['reference_video_urls'] = [
+                    f'/api/video/r2v/{api_key_hash}/{fn}' for fn in reference_video_filenames
+                ]
+                created_tasks.append(task_info)
+
+                print(f"[INFO] 创建参考生视频任务 {i + 1}/{batch_count}: {task_info['task_id']}")
+
+        if created_tasks:
+            message = f'成功创建{batch_count}个任务' if batch_count > 1 else '任务创建成功'
+            return jsonify({
+                'success': True,
+                'tasks': created_tasks,
+                'batch_id': batch_id,
+                'message': message
+            })
+        else:
+            return jsonify({'success': False, 'message': '创建任务失败'})
+
+    except Exception as e:
+        print(f"[ERROR] 创建参考生视频任务失败: {e}")
+        return jsonify({'success': False, 'message': f'创建任务失败: {str(e)}'})
+
+
+@app.route('/api/r2v-tasks', methods=['GET'])
+def get_r2v_tasks():
+    """获取参考生视频任务列表 - 支持分页（高性能版本）"""
+    try:
+        api_key_hash = get_api_key_hash()
+        if not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+
+        # 分页参数
+        page = request.args.get('page', 1, type=int)
+        limit = request.args.get('limit', 10, type=int)
+        limit = min(limit, 50)
+
+        cache_service = CacheService(api_key_hash)
+
+        # 使用高性能分页方法
+        tasks, total, has_more = cache_service.get_r2v_tasks_paginated(page, limit)
+
+        # 为每个任务添加视频URL
+        for task in tasks:
+            if task.get('reference_video_filenames'):
+                task['reference_video_urls'] = [
+                    f"/api/video/r2v/{api_key_hash}/{fn}" for fn in task['reference_video_filenames']
+                ]
+            if task.get('task_status') == 'SUCCEEDED':
+                task['local_video_path'] = f"/api/video/r2v/{api_key_hash}/{task['task_id']}.mp4"
+
+        return jsonify({
+            'success': True,
+            'tasks': tasks,
+            'page': page,
+            'limit': limit,
+            'total': total,
+            'has_more': has_more
+        })
+
+    except Exception as e:
+        print(f"[ERROR] 获取参考生视频任务列表失败: {e}")
+        return jsonify({'success': False, 'message': f'获取任务列表失败: {str(e)}'})
+
+
+@app.route('/api/r2v-task/<task_id>', methods=['GET'])
+def get_r2v_task_status(task_id):
+    """获取参考生视频任务状态"""
+    try:
+        api_key = get_api_key()
+        api_key_hash = get_api_key_hash()
+
+        if not api_key or not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+
+        video_service = VideoService(api_key)
+        cache_service = CacheService(api_key_hash)
+
+        # 查询任务状态
+        result = video_service.get_task_status(task_id)
+
+        if result:
+            # 更新缓存
+            cache_service.update_r2v_task(task_id, result)
+
+            # 如果任务完成，下载视频
+            if result.get('task_status') == 'SUCCEEDED' and result.get('video_url'):
+                video_path = cache_service.download_r2v_video(task_id, result['video_url'])
+                if video_path:
+                    result['local_video_path'] = f'/api/video/r2v/{api_key_hash}/{task_id}.mp4'
+
+            return jsonify({'success': True, 'task': result})
+        else:
+            return jsonify({'success': False, 'message': '查询任务失败'})
+
+    except Exception as e:
+        print(f"[ERROR] 查询参考生视频任务失败: {e}")
+        return jsonify({'success': False, 'message': f'查询任务失败: {str(e)}'})
+
+
+@app.route('/api/i2i-image/<api_key_hash>/<filename>')
+def get_i2i_image(api_key_hash, filename):
+    """获取图生图输出图片"""
+    try:
+        filepath = os.path.join(Config.OUTPUT_I2I_DIR, api_key_hash, filename)
+        if os.path.exists(filepath):
+            # 检测MIME类型
+            ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else 'jpg'
+            mime_types = {
+                'jpg': 'image/jpeg', 'jpeg': 'image/jpeg',
+                'png': 'image/png', 'webp': 'image/webp',
+                'bmp': 'image/bmp', 'gif': 'image/gif'
+            }
+            mimetype = mime_types.get(ext, 'image/jpeg')
+
+            response = make_response(send_file(filepath, mimetype=mimetype))
+            response.headers['Cache-Control'] = 'private, max-age=604800'  # 缓存7天
+            response.headers['ETag'] = f'"{os.path.getmtime(filepath)}-{os.path.getsize(filepath)}"'
+            return response
+        return jsonify({'error': '文件不存在'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/create-kf2v-task', methods=['POST'])
+def create_kf2v_task():
+    """创建首尾帧生视频任务"""
+    try:
+        api_key = get_api_key()
+        api_key_hash = get_api_key_hash()
+
+        if not api_key or not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+
+        data = request.get_json()
+
+        # 获取首帧图片路径 - 首尾帧上传目录
+        first_frame_filename = data.get('first_frame_filename')
+        if not first_frame_filename:
+            return jsonify({'success': False, 'message': '请先上传首帧图片'})
+
+        first_frame_path = os.path.join(Config.UPLOAD_KF2V_DIR, api_key_hash, first_frame_filename)
+
+        # 获取尾帧图片路径
+        last_frame_filename = data.get('last_frame_filename')
+        if not last_frame_filename:
+            return jsonify({'success': False, 'message': '请先上传尾帧图片'})
+
+        last_frame_path = os.path.join(Config.UPLOAD_KF2V_DIR, api_key_hash, last_frame_filename)
+
+        # 验证提示词
+        prompt = data.get('prompt', '').strip()
+        if not prompt:
+            return jsonify({'success': False, 'message': '请输入提示词'})
+
+        # 创建服务
+        video_service = VideoService(api_key)
+        cache_service = CacheService(api_key_hash)
+
+        # 获取批量数量
+        batch_count = int(data.get('batch_count', 1))
+        batch_count = max(1, min(4, batch_count))  # 限制在1-4之间
+
+        # 生成批次ID
+        import uuid
+        batch_id = str(uuid.uuid4()) if batch_count > 1 else None
+
+        created_tasks = []
+
+        # 批量创建任务
+        for i in range(batch_count):
+            task_info = video_service.create_kf2v_task(
+                first_frame_path=first_frame_path,
+                last_frame_path=last_frame_path,
+                prompt=prompt,
+                model=data.get('model', 'wan2.2-kf2v-flash'),
+                resolution=data.get('resolution', '720P'),
+                negative_prompt=data.get('negative_prompt', ''),
+                prompt_extend=data.get('prompt_extend', True)
+            )
+
+            if task_info:
+                # 添加图片文件名和批次信息
+                task_info['first_frame_filename'] = first_frame_filename
+                task_info['last_frame_filename'] = last_frame_filename
+                task_info['batch_id'] = batch_id
+                task_info['batch_index'] = i + 1
+                task_info['batch_total'] = batch_count
+
+                # 保存任务信息
+                cache_service.add_kf2v_task(task_info)
+
+                # 添加图片URL到返回数据
+                task_info['first_frame_url'] = f'/api/image/kf2v/{api_key_hash}/{first_frame_filename}'
+                task_info['last_frame_url'] = f'/api/image/kf2v/{api_key_hash}/{last_frame_filename}'
+                created_tasks.append(task_info)
+
+                print(f"[INFO] 创建首尾帧任务 {i + 1}/{batch_count}: {task_info['task_id']}")
+
+        if created_tasks:
+            message = f'成功创建{batch_count}个任务' if batch_count > 1 else '任务创建成功'
+            return jsonify({
+                'success': True,
+                'tasks': created_tasks,
+                'batch_id': batch_id,
+                'message': message
+            })
+        else:
+            return jsonify({'success': False, 'message': '创建任务失败'})
+
+    except Exception as e:
+        print(f"[ERROR] 创建首尾帧任务失败: {e}")
+        return jsonify({'success': False, 'message': f'创建任务失败: {str(e)}'})
+
+
+@app.route('/api/kf2v-tasks', methods=['GET'])
+def get_kf2v_tasks():
+    """获取首尾帧任务列表 - 支持分页（高性能版本）"""
+    try:
+        api_key_hash = get_api_key_hash()
+        if not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+
+        # 分页参数
+        page = request.args.get('page', 1, type=int)
+        limit = request.args.get('limit', 10, type=int)
+        limit = min(limit, 50)
+
+        cache_service = CacheService(api_key_hash)
+        
+        # 使用高性能分页方法
+        tasks, total, has_more = cache_service.get_kf2v_tasks_paginated(page, limit)
+
+        # 为每个任务添加图片和视频URL
+        for task in tasks:
+            if task.get('first_frame_filename'):
+                task['first_frame_url'] = f"/api/image/kf2v/{api_key_hash}/{task['first_frame_filename']}"
+            if task.get('last_frame_filename'):
+                task['last_frame_url'] = f"/api/image/kf2v/{api_key_hash}/{task['last_frame_filename']}"
+            if task.get('task_status') == 'SUCCEEDED':
+                task['local_video_path'] = f"/api/video/kf2v/{api_key_hash}/{task['task_id']}.mp4"
+
+        return jsonify({
+            'success': True,
+            'tasks': tasks,
+            'page': page,
+            'limit': limit,
+            'total': total,
+            'has_more': has_more
+        })
+
+    except Exception as e:
+        print(f"[ERROR] 获取首尾帧任务列表失败: {e}")
+        return jsonify({'success': False, 'message': f'获取任务列表失败: {str(e)}'})
+
+
+@app.route('/api/kf2v-task/<task_id>', methods=['GET'])
+def get_kf2v_task_status(task_id):
+    """获取首尾帧任务状态"""
+    try:
+        api_key = get_api_key()
+        api_key_hash = get_api_key_hash()
+
+        if not api_key or not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+
+        video_service = VideoService(api_key)
+        cache_service = CacheService(api_key_hash)
+
+        # 查询任务状态
+        result = video_service.get_task_status(task_id)
+
+        if result:
+            # 更新缓存
+            cache_service.update_kf2v_task(task_id, result)
+
+            # 如果任务完成，下载视频
+            if result.get('task_status') == 'SUCCEEDED' and result.get('video_url'):
+                video_path = cache_service.download_kf2v_video(task_id, result['video_url'])
+                if video_path:
+                    result['local_video_path'] = f'/api/video/kf2v/{api_key_hash}/{task_id}.mp4'
+
+            return jsonify({'success': True, 'task': result})
+        else:
+            return jsonify({'success': False, 'message': '查询任务失败'})
+
+    except Exception as e:
+        print(f"[ERROR] 查询首尾帧任务失败: {e}")
+        return jsonify({'success': False, 'message': f'查询任务失败: {str(e)}'})
+
+
+@app.route('/api/video-effects', methods=['GET'])
+def get_video_effects():
+    """获取可用的视频特效列表"""
+    try:
+        effects_file = os.path.join(os.path.dirname(__file__), 'config', 'video_effects.json')
+
+        if not os.path.exists(effects_file):
+            return jsonify({'success': True, 'effects': []})
+
+        import json
+        with open(effects_file, 'r', encoding='utf-8') as f:
+            effects_data = json.load(f)
+
+        return jsonify({
+            'success': True,
+            'effects': effects_data.get('effects', [])
+        })
+
+    except Exception as e:
+        print(f"[ERROR] 获取特效列表失败: {e}")
+        return jsonify({'success': False, 'message': f'获取特效列表失败: {str(e)}'})
+
+
+@app.route('/api/create-t2i-task', methods=['POST'])
+def create_t2i_task():
+    """创建文生图任务"""
+    try:
+        api_key = get_api_key()
+        api_key_hash = get_api_key_hash()
+
+        if not api_key or not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+
+        data = request.get_json()
+
+        prompt = data.get('prompt', '').strip()
+        if not prompt:
+            return jsonify({'success': False, 'message': '请输入提示词'})
+
+        video_service = VideoService(api_key)
+        cache_service = CacheService(api_key_hash)
+
+        batch_count = int(data.get('batch_count', 1))
+        batch_count = max(1, min(4, batch_count))
+
+        import uuid
+        batch_id = str(uuid.uuid4()) if batch_count > 1 else None
+
+        created_tasks = []
+
+        for i in range(batch_count):
+            task_info = video_service.create_t2i_task(
+                prompt=prompt,
+                model=data.get('model', 'wan2.5-t2i-preview'),
+                size=data.get('size', '1024*1024'),
+                n=1,
+                negative_prompt=data.get('negative_prompt', ''),
+                prompt_extend=data.get('prompt_extend', True),
+                watermark=data.get('watermark', False)
+            )
+
+            if task_info:
+                task_info['batch_id'] = batch_id
+                task_info['batch_index'] = i + 1
+                task_info['batch_total'] = batch_count
+
+                # wan2.6-t2i是同步接口，直接返回图片，需要下载到本地
+                if task_info.get('model') == 'wan2.6-t2i' and task_info.get('task_status') == 'SUCCEEDED':
+                    if task_info.get('image_urls'):
+                        local_filenames = cache_service.download_t2i_images(task_info['task_id'], task_info['image_urls'])
+                        if local_filenames:
+                            local_image_urls = [f'/api/t2i-image/{api_key_hash}/{fn}' for fn in local_filenames]
+                            task_info['local_image_urls'] = local_image_urls
+                            task_info['local_filenames'] = local_filenames
+                            print(f"[INFO] wan2.6-t2i图片已保存到本地: {local_filenames}")
+
+                cache_service.add_t2i_task(task_info)
+                created_tasks.append(task_info)
+
+                print(f"[INFO] 创建文生图任务 {i + 1}/{batch_count}: {task_info['task_id']}")
+
+        if created_tasks:
+            message = f'成功创建{batch_count}个任务' if batch_count > 1 else '任务创建成功'
+            return jsonify({
+                'success': True,
+                'tasks': created_tasks,
+                'batch_id': batch_id,
+                'message': message
+            })
+        else:
+            return jsonify({'success': False, 'message': '创建任务失败'})
+
+    except Exception as e:
+        print(f"[ERROR] 创建文生图任务失败: {e}")
+        return jsonify({'success': False, 'message': f'创建任务失败: {str(e)}'})
+
+
+@app.route('/api/t2i-tasks', methods=['GET'])
+def get_t2i_tasks():
+    """获取文生图任务列表 - 支持分页（高性能版本）"""
+    try:
+        api_key_hash = get_api_key_hash()
+        if not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+
+        page = request.args.get('page', 1, type=int)
+        limit = request.args.get('limit', 10, type=int)
+        limit = min(limit, 50)
+
+        cache_service = CacheService(api_key_hash)
+        
+        # 使用高性能分页方法
+        tasks, total, has_more = cache_service.get_t2i_tasks_paginated(page, limit)
+
+        return jsonify({
+            'success': True,
+            'tasks': tasks,
+            'page': page,
+            'limit': limit,
+            'total': total,
+            'has_more': has_more
+        })
+
+    except Exception as e:
+        print(f"[ERROR] 获取文生图任务列表失败: {e}")
+        return jsonify({'success': False, 'message': f'获取任务列表失败: {str(e)}'})
+
+
+@app.route('/api/t2i-task/<task_id>', methods=['GET'])
+def get_t2i_task_status(task_id):
+    """获取文生图任务状态"""
+    try:
+        api_key = get_api_key()
+        api_key_hash = get_api_key_hash()
+
+        if not api_key or not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+
+        cache_service = CacheService(api_key_hash)
+
+        # 先检查缓存中的任务状态
+        cached_task = cache_service.get_t2i_task(task_id)
+
+        # wan2.6-t2i是同步接口，直接返回结果，不需要轮询
+        if task_id.startswith('wan26_'):
+            if cached_task:
+                return jsonify({'success': True, 'task': cached_task})
+            return jsonify({'success': False, 'message': '任务不存在'})
+
+        # 如果任务已经完成（SUCCEEDED或FAILED），直接返回缓存数据
+        if cached_task and cached_task.get('task_status') in ['SUCCEEDED', 'FAILED']:
+            return jsonify({'success': True, 'task': cached_task})
+
+        # 对于未完成的任务，调用DashScope API查询状态
+        video_service = VideoService(api_key)
+        result = video_service.get_task_status(task_id)
+
+        if result:
+            if result.get('task_status') == 'SUCCEEDED' and result.get('results'):
+                image_urls = []
+                for img_result in result['results']:
+                    if img_result.get('url'):
+                        image_urls.append(img_result['url'])
+                result['image_urls'] = image_urls
+
+                # 下载图片到本地存储
+                local_filenames = cache_service.download_t2i_images(task_id, image_urls)
+                if local_filenames:
+                    # 生成本地图片URL
+                    local_image_urls = [f'/api/t2i-image/{api_key_hash}/{fn}' for fn in local_filenames]
+                    result['local_image_urls'] = local_image_urls
+                    result['local_filenames'] = local_filenames
+                    print(f"[INFO] 文生图任务图片已保存到本地: {local_filenames}")
+
+            cache_service.update_t2i_task(task_id, result)
+            return jsonify({'success': True, 'task': result})
+        else:
+            return jsonify({'success': False, 'message': '查询任务失败'})
+
+    except Exception as e:
+        print(f"[ERROR] 查询文生图任务失败: {e}")
+        return jsonify({'success': False, 'message': f'查询任务失败: {str(e)}'})
+
+
+@app.route('/api/t2i-image/<api_key_hash>/<filename>')
+def get_t2i_image(api_key_hash, filename):
+    """获取文生图输出图片"""
+    try:
+        filepath = os.path.join(Config.OUTPUT_T2I_DIR, api_key_hash, filename)
+        if os.path.exists(filepath):
+            # 检测MIME类型
+            ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else 'jpg'
+            mime_types = {
+                'jpg': 'image/jpeg', 'jpeg': 'image/jpeg',
+                'png': 'image/png', 'webp': 'image/webp',
+                'bmp': 'image/bmp', 'gif': 'image/gif'
+            }
+            mimetype = mime_types.get(ext, 'image/jpeg')
+
+            response = make_response(send_file(filepath, mimetype=mimetype))
+            response.headers['Cache-Control'] = 'private, max-age=604800'
+            response.headers['ETag'] = f'"{os.path.getmtime(filepath)}-{os.path.getsize(filepath)}"'
+            return response
+        return jsonify({'error': '文件不存在'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/upload-audio', methods=['POST'])
+def upload_audio():
+    """上传音频文件并获取OSS临时URL"""
+    try:
+        api_key = get_api_key()
+        api_key_hash = get_api_key_hash()
+
+        if not api_key or not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+
+        if 'audio' not in request.files:
+            return jsonify({'success': False, 'message': '没有上传音频文件'})
+
+        file = request.files['audio']
+        if file.filename == '':
+            return jsonify({'success': False, 'message': '没有选择文件'})
+
+        # 获取文件扩展名
+        ext = ''
+        if '.' in file.filename:
+            ext = file.filename.rsplit('.', 1)[1].lower()
+
+        # 验证音频格式
+        if ext not in ['wav', 'mp3']:
+            return jsonify({'success': False, 'message': '不支持的音频格式，仅支持 WAV 和 MP3'})
+
+        # 生成新文件名
+        import uuid
+        timestamp = int(time.time())
+        unique_id = str(uuid.uuid4())[:8]
+        new_filename = f"{timestamp}_{unique_id}.{ext}"
+
+        # 音频上传目录
+        user_audio_dir = os.path.join(Config.UPLOAD_AUDIO_DIR, api_key_hash)
+        os.makedirs(user_audio_dir, exist_ok=True)
+
+        # 保存文件到本地临时目录
+        filepath = os.path.join(user_audio_dir, new_filename)
+        file.save(filepath)
+
+        # 验证音频文件
+        audio_service = AudioService(api_key)
+        is_valid, error_msg = audio_service.validate_audio_file(filepath)
+
+        if not is_valid:
+            # 删除无效文件
+            os.remove(filepath)
+            return jsonify({'success': False, 'message': error_msg})
+
+        # 上传到OSS并获取临时URL
+        oss_url = audio_service.upload_audio_and_get_url(filepath, model_name="wanx-v1")
+
+        if oss_url:
+            return jsonify({
+                'success': True,
+                'filename': new_filename,
+                'oss_url': oss_url,
+                'message': '音频上传成功（有效期48小时）'
+            })
+        else:
+            return jsonify({'success': False, 'message': '上传到OSS失败，请重试'})
+
+    except Exception as e:
+        print(f"[ERROR] 上传音频失败: {e}")
+        return jsonify({'success': False, 'message': f'上传失败: {str(e)}'})
+
+
+@app.route('/api/audio/<api_key_hash>/<filename>')
+def get_audio(api_key_hash, filename):
+    """获取本地音频文件"""
+    try:
+        filepath = os.path.join(Config.UPLOAD_AUDIO_DIR, api_key_hash, filename)
+        if os.path.exists(filepath):
+            # 根据扩展名返回正确的MIME类型
+            ext = filename.rsplit('.', 1)[1].lower()
+            mime_types = {
+                'mp3': 'audio/mpeg',
+                'wav': 'audio/wav'
+            }
+            mime_type = mime_types.get(ext, 'audio/mpeg')
+            return send_file(filepath, mimetype=mime_type)
+        return jsonify({'error': '文件不存在'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# ========== 资产库路由 ==========
+
+@app.route('/assets')
+def assets_page():
+    """资产库页面"""
+    if 'api_key_hash' not in session:
+        return render_template('index.html')
+    return render_template('assets.html')
+
+
+# ========== 资产库相关API ==========
+
+def generate_asset_video_poster(video_path: str, poster_path: str) -> bool:
+    """为资产视频生成封面图
+    
+    Args:
+        video_path: 视频文件路径
+        poster_path: 封面图输出路径
+        
+    Returns:
+        是否成功
+    """
+    if os.path.exists(poster_path):
+        return True  # 已存在
+    
+    try:
+        # 确保目录存在
+        os.makedirs(os.path.dirname(poster_path), exist_ok=True)
+        
+        # 使用 ffmpeg 提取第0.5秒的帧作为封面
+        cmd = [
+            'ffmpeg',
+            '-ss', '0.5',
+            '-i', video_path,
+            '-vframes', '1',
+            '-vf', 'scale=-1:360',  # 缩放高度为360px，减小文件体积
+            '-q:v', '3',  # 高质量JPEG
+            '-y',  # 覆盖已存在的文件
+            poster_path
+        ]
+        
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            timeout=30
+        )
+        
+        if result.returncode == 0 and os.path.exists(poster_path):
+            print(f"[INFO] 资产视频封面生成成功: {poster_path}")
+            return True
+        else:
+            error_msg = result.stderr.decode('utf-8', errors='ignore')
+            print(f"[ERROR] 资产视频封面生成失败: {error_msg[:200]}")
+            return False
+            
+    except subprocess.TimeoutExpired:
+        print(f"[ERROR] ffmpeg超时: {video_path}")
+        return False
+    except Exception as e:
+        print(f"[ERROR] 生成资产视频封面异常: {e}")
+        return False
+
+
+@app.route('/api/assets/upload', methods=['POST'])
+def upload_asset():
+    """上传资产（图片或视频）"""
+    try:
+        api_key_hash = get_api_key_hash()
+        if not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+
+        # 获取所有上传的文件
+        files = request.files.getlist('file')
+        if not files or len(files) == 0:
+            return jsonify({'success': False, 'message': '没有上传文件'})
+
+        # 获取分类信息（使用第一个文件的分类信息）
+        category = request.form.get('category', 'storyboard')  # storyboard, artwork, video
+
+        # 验证分类
+        if category not in ['storyboard', 'artwork', 'video']:
+            return jsonify({'success': False, 'message': '无效的资产分类'})
+
+        # 存储所有成功上传的文件信息
+        uploaded_files = []
+
+        # 验证文件类型
+        image_exts = {'png', 'jpg', 'jpeg', 'bmp', 'webp', 'gif'}
+        video_exts = {'mp4', 'mov', 'avi', 'webm'}
+
+        for file in files:
+            if file.filename == '':
+                continue  # 跳过空文件
+
+            # 获取文件扩展名
+            original_filename = file.filename
+            ext = ''
+            if '.' in original_filename:
+                ext = original_filename.rsplit('.', 1)[1].lower()
+
+            # 验证文件类型
+            if category in ['storyboard', 'artwork']:
+                if ext not in image_exts:
+                    return jsonify({'success': False, 'message': f'分镜库和原画库仅支持图片格式，不支持文件: {original_filename}'})
+            elif category == 'video':
+                if ext not in video_exts:
+                    return jsonify({'success': False, 'message': f'视频库仅支持视频格式，不支持文件: {original_filename}'})
+
+            # 生成新文件名
+            import uuid
+            timestamp = int(time.time())
+            unique_id = str(uuid.uuid4())[:8]
+            new_filename = f"{timestamp}_{unique_id}.{ext}" if ext else f"{timestamp}_{unique_id}"
+
+            # 根据分类选择目录
+            category_dirs = {
+                'storyboard': Config.ASSETS_STORYBOARD_DIR,
+                'artwork': Config.ASSETS_ARTWORK_DIR,
+                'video': Config.ASSETS_VIDEO_DIR
+            }
+            base_dir = category_dirs[category]
+            user_dir = os.path.join(base_dir, api_key_hash)
+            os.makedirs(user_dir, exist_ok=True)
+
+            filepath = os.path.join(user_dir, new_filename)
+            file.save(filepath)
+
+            # 同步到磁盘
+            try:
+                os.sync() if hasattr(os, 'sync') else None
+            except:
+                pass
+
+            # 保存元数据
+            meta_filename = new_filename + '.meta.json'
+            meta_path = os.path.join(user_dir, meta_filename)
+            import json
+            meta_data = {
+                'original_filename': original_filename,
+                'filename': new_filename,
+                'category': category,
+                'upload_time': time.strftime('%Y-%m-%d %H:%M:%S'),
+                'file_type': 'video' if category == 'video' else 'image'
+            }
+            with open(meta_path, 'w', encoding='utf-8') as f:
+                json.dump(meta_data, f, ensure_ascii=False, indent=2)
+
+            # 如果是视频，生成封面图
+            poster_url = None
+            if category == 'video':
+                poster_dir = os.path.join(user_dir, 'posters')
+                poster_filename = new_filename.rsplit('.', 1)[0] + '.jpg'
+                poster_path = os.path.join(poster_dir, poster_filename)
+                if generate_asset_video_poster(filepath, poster_path):
+                    poster_url = f'/api/assets/video-poster/{api_key_hash}/{poster_filename}'
+
+            # 添加到上传成功的文件列表
+            uploaded_files.append({
+                'filename': new_filename,
+                'original_filename': original_filename,
+                'url': f'/api/assets/{category}/{api_key_hash}/{new_filename}',
+                'poster_url': poster_url,
+                'category': category
+            })
+
+        # 同步到磁盘
+        try:
+            os.sync() if hasattr(os, 'sync') else None
+        except:
+            pass
+
+        return jsonify({
+            'success': True,
+            'files': uploaded_files,
+            'message': f'成功上传 {len(uploaded_files)} 个文件'
+        })
+
+    except Exception as e:
+        print(f"[ERROR] 上传资产失败: {e}")
+        return jsonify({'success': False, 'message': f'上传失败: {str(e)}'})
+
+
+@app.route('/api/assets/<category>/<api_key_hash>/<filename>')
+def get_asset(category, api_key_hash, filename):
+    """获取资产文件"""
+    try:
+        category_dirs = {
+            'storyboard': Config.ASSETS_STORYBOARD_DIR,
+            'artwork': Config.ASSETS_ARTWORK_DIR,
+            'video': Config.ASSETS_VIDEO_DIR
+        }
+        
+        base_dir = category_dirs.get(category)
+        if not base_dir:
+            return jsonify({'error': '无效的资产分类'}), 400
+
+        filepath = os.path.join(base_dir, api_key_hash, filename)
+        if not os.path.exists(filepath):
+            return jsonify({'error': '文件不存在'}), 404
+
+        # 检测MIME类型
+        ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+        
+        if category == 'video':
+            # 视频使用Range请求
+            return serve_video_with_range(filepath, 'video/mp4')
+        else:
+            # 图片直接返回
+            mime_types = {
+                'jpg': 'image/jpeg', 'jpeg': 'image/jpeg',
+                'png': 'image/png', 'webp': 'image/webp',
+                'bmp': 'image/bmp', 'gif': 'image/gif'
+            }
+            mimetype = mime_types.get(ext, 'image/png')
+            response = make_response(send_file(filepath, mimetype=mimetype))
+            response.headers['Cache-Control'] = 'private, max-age=604800'
+            response.headers['ETag'] = f'"{os.path.getmtime(filepath)}-{os.path.getsize(filepath)}"'
+            return response
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/assets/video-poster/<api_key_hash>/<poster_filename>')
+def get_asset_video_poster(api_key_hash, poster_filename):
+    """获取资产视频封面图"""
+    try:
+        poster_dir = os.path.join(Config.ASSETS_VIDEO_DIR, api_key_hash, 'posters')
+        poster_path = os.path.join(poster_dir, poster_filename)
+        
+        if not os.path.exists(poster_path):
+            # 尝试根据封面文件名找到视频并生成封面
+            video_name = poster_filename.rsplit('.', 1)[0]
+            video_dir = os.path.join(Config.ASSETS_VIDEO_DIR, api_key_hash)
+            
+            # 查找对应的视频文件
+            video_path = None
+            for ext in ['mp4', 'mov', 'avi', 'webm']:
+                candidate = os.path.join(video_dir, f'{video_name}.{ext}')
+                if os.path.exists(candidate):
+                    video_path = candidate
+                    break
+            
+            if video_path:
+                generate_asset_video_poster(video_path, poster_path)
+        
+        if os.path.exists(poster_path):
+            response = make_response(send_file(poster_path, mimetype='image/jpeg'))
+            response.headers['Cache-Control'] = 'public, max-age=2592000'  # 缓存30天
+            response.headers['ETag'] = f'"{os.path.getmtime(poster_path)}"'
+            return response
+        else:
+            # 封面图生成失败，返回404
+            return jsonify({'error': '封面图不存在'}), 404
+            
+    except Exception as e:
+        print(f"[ERROR] 获取资产视频封面失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/assets/list', methods=['GET'])
+def list_assets():
+    """获取资产列表"""
+    try:
+        api_key_hash = get_api_key_hash()
+        if not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+
+        category = request.args.get('category', 'all')  # all, storyboard, artwork, video
+        page = request.args.get('page', 1, type=int)
+        limit = request.args.get('limit', 20, type=int)
+        limit = min(limit, 100)
+        
+        # 项目/分集筛选参数
+        filter_project = request.args.get('project', '').strip()
+        filter_episode = request.args.get('episode', '').strip()
+
+        import json
+        assets = []
+
+        # 确定要查询的分类
+        if category == 'all':
+            categories = ['storyboard', 'artwork', 'video']
+        elif category == 'images':  # 特殊分类：所有图片（分镜+原画）
+            categories = ['storyboard', 'artwork']
+        else:
+            categories = [category]
+
+        category_dirs = {
+            'storyboard': Config.ASSETS_STORYBOARD_DIR,
+            'artwork': Config.ASSETS_ARTWORK_DIR,
+            'video': Config.ASSETS_VIDEO_DIR
+        }
+
+        for cat in categories:
+            base_dir = category_dirs.get(cat)
+            if not base_dir:
+                continue
+
+            user_dir = os.path.join(base_dir, api_key_hash)
+            if not os.path.exists(user_dir):
+                continue
+
+            for filename in os.listdir(user_dir):
+                if filename.endswith('.meta.json'):
+                    continue
+                
+                # 跳过 posters 目录
+                if filename == 'posters':
+                    continue
+
+                # 读取元数据
+                meta_path = os.path.join(user_dir, filename + '.meta.json')
+                meta = {}
+                if os.path.exists(meta_path):
+                    try:
+                        with open(meta_path, 'r', encoding='utf-8') as f:
+                            meta = json.load(f)
+                    except:
+                        pass
+                
+                # 根据项目/分集筛选
+                asset_project = meta.get('project', '')
+                asset_episode = meta.get('episode', '')
+                
+                if filter_project and asset_project != filter_project:
+                    continue
+                if filter_episode and asset_episode != filter_episode:
+                    continue
+
+                filepath = os.path.join(user_dir, filename)
+                file_type = meta.get('file_type', 'image' if cat != 'video' else 'video')
+                
+                asset_data = {
+                    'filename': filename,
+                    'original_filename': meta.get('original_filename', filename),
+                    'category': cat,
+                    'url': f'/api/assets/{cat}/{api_key_hash}/{filename}',
+                    'upload_time': meta.get('upload_time', ''),
+                    'file_type': file_type,
+                    'file_size': os.path.getsize(filepath) if os.path.exists(filepath) else 0,
+                    'project': asset_project,
+                    'episode': asset_episode
+                }
+                
+                # 为视频添加封面图URL
+                if file_type == 'video':
+                    poster_filename = filename.rsplit('.', 1)[0] + '.jpg'
+                    asset_data['poster_url'] = f'/api/assets/video-poster/{api_key_hash}/{poster_filename}'
+                
+                assets.append(asset_data)
+
+        # 按上传时间排序（最新的在前面）
+        assets.sort(key=lambda x: x.get('upload_time', ''), reverse=True)
+
+        # 分页
+        total = len(assets)
+        start = (page - 1) * limit
+        end = start + limit
+        paged_assets = assets[start:end]
+        has_more = end < total
+
+        return jsonify({
+            'success': True,
+            'assets': paged_assets,
+            'page': page,
+            'limit': limit,
+            'total': total,
+            'has_more': has_more
+        })
+
+    except Exception as e:
+        print(f"[ERROR] 获取资产列表失败: {e}")
+        return jsonify({'success': False, 'message': f'获取失败: {str(e)}'})
+
+
+@app.route('/api/assets/delete', methods=['POST'])
+def delete_asset():
+    """删除资产"""
+    try:
+        api_key_hash = get_api_key_hash()
+        if not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+
+        data = request.get_json()
+        category = data.get('category')
+        filename = data.get('filename')
+
+        if not category or not filename:
+            return jsonify({'success': False, 'message': '缺少参数'})
+
+        category_dirs = {
+            'storyboard': Config.ASSETS_STORYBOARD_DIR,
+            'artwork': Config.ASSETS_ARTWORK_DIR,
+            'video': Config.ASSETS_VIDEO_DIR
+        }
+
+        base_dir = category_dirs.get(category)
+        if not base_dir:
+            return jsonify({'success': False, 'message': '无效的资产分类'})
+
+        user_dir = os.path.join(base_dir, api_key_hash)
+        filepath = os.path.join(user_dir, filename)
+        meta_path = filepath + '.meta.json'
+
+        # 删除文件
+        if os.path.exists(filepath):
+            os.remove(filepath)
+        if os.path.exists(meta_path):
+            os.remove(meta_path)
+        
+        # 如果是视频，同时删除封面图
+        if category == 'video':
+            poster_filename = filename.rsplit('.', 1)[0] + '.jpg'
+            poster_path = os.path.join(user_dir, 'posters', poster_filename)
+            if os.path.exists(poster_path):
+                os.remove(poster_path)
+
+        return jsonify({'success': True, 'message': '删除成功'})
+
+    except Exception as e:
+        print(f"[ERROR] 删除资产失败: {e}")
+        return jsonify({'success': False, 'message': f'删除失败: {str(e)}'})
+
+
+# ========== 资产标签管理API ==========
+
+def get_projects_file_path(api_key_hash):
+    """获取项目列表文件路径"""
+    projects_dir = os.path.join(Config.CACHE_DIR, 'projects')
+    os.makedirs(projects_dir, exist_ok=True)
+    return os.path.join(projects_dir, f'{api_key_hash}_projects.json')
+
+
+def load_projects(api_key_hash):
+    """加载项目列表"""
+    import json
+    file_path = get_projects_file_path(api_key_hash)
+    if os.path.exists(file_path):
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return []
+    return []
+
+
+def save_projects(api_key_hash, projects):
+    """保存项目列表"""
+    import json
+    file_path = get_projects_file_path(api_key_hash)
+    with open(file_path, 'w', encoding='utf-8') as f:
+        json.dump(projects, f, ensure_ascii=False, indent=2)
+
+
+@app.route('/api/assets/projects', methods=['GET'])
+def get_projects():
+    """获取项目列表"""
+    try:
+        api_key_hash = get_api_key_hash()
+        if not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+        
+        projects = load_projects(api_key_hash)
+        return jsonify({'success': True, 'projects': projects})
+    
+    except Exception as e:
+        print(f"[ERROR] 获取项目列表失败: {e}")
+        return jsonify({'success': False, 'message': f'获取失败: {str(e)}'})
+
+
+@app.route('/api/assets/projects', methods=['POST'])
+def create_project():
+    """创建项目"""
+    try:
+        api_key_hash = get_api_key_hash()
+        if not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+        
+        data = request.get_json()
+        project_name = data.get('name', '').strip()
+        
+        if not project_name:
+            return jsonify({'success': False, 'message': '项目名称不能为空'})
+        
+        projects = load_projects(api_key_hash)
+        
+        # 检查是否已存在
+        if any(p['name'] == project_name for p in projects):
+            return jsonify({'success': False, 'message': '项目已存在'})
+        
+        # 添加新项目
+        new_project = {
+            'name': project_name,
+            'episodes': [],
+            'created_time': time.strftime('%Y-%m-%d %H:%M:%S')
+        }
+        projects.append(new_project)
+        save_projects(api_key_hash, projects)
+        
+        return jsonify({'success': True, 'project': new_project})
+    
+    except Exception as e:
+        print(f"[ERROR] 创建项目失败: {e}")
+        return jsonify({'success': False, 'message': f'创建失败: {str(e)}'})
+
+
+@app.route('/api/assets/projects/<project_name>', methods=['DELETE'])
+def delete_project(project_name):
+    """删除项目"""
+    try:
+        api_key_hash = get_api_key_hash()
+        if not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+        
+        projects = load_projects(api_key_hash)
+        projects = [p for p in projects if p['name'] != project_name]
+        save_projects(api_key_hash, projects)
+        
+        return jsonify({'success': True, 'message': '删除成功'})
+    
+    except Exception as e:
+        print(f"[ERROR] 删除项目失败: {e}")
+        return jsonify({'success': False, 'message': f'删除失败: {str(e)}'})
+
+
+@app.route('/api/assets/projects/<project_name>', methods=['PUT'])
+def rename_project(project_name):
+    """重命名项目"""
+    try:
+        api_key_hash = get_api_key_hash()
+        if not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+        
+        data = request.get_json()
+        new_name = data.get('name', '').strip()
+        
+        if not new_name:
+            return jsonify({'success': False, 'message': '项目名称不能为空'})
+        
+        projects = load_projects(api_key_hash)
+        
+        # 检查新名称是否已存在
+        if any(p['name'] == new_name for p in projects):
+            return jsonify({'success': False, 'message': '项目名称已存在'})
+        
+        # 找到并重命名项目
+        found = False
+        for p in projects:
+            if p['name'] == project_name:
+                p['name'] = new_name
+                found = True
+                break
+        
+        if not found:
+            return jsonify({'success': False, 'message': '项目不存在'})
+        
+        save_projects(api_key_hash, projects)
+        
+        # 更新所有使用该项目的资产元数据
+        import json
+        category_dirs = {
+            'storyboard': Config.ASSETS_STORYBOARD_DIR,
+            'artwork': Config.ASSETS_ARTWORK_DIR,
+            'video': Config.ASSETS_VIDEO_DIR
+        }
+        
+        updated_count = 0
+        for cat, base_dir in category_dirs.items():
+            user_dir = os.path.join(base_dir, api_key_hash)
+            if not os.path.exists(user_dir):
+                continue
+            
+            for filename in os.listdir(user_dir):
+                if not filename.endswith('.meta.json'):
+                    continue
+                
+                meta_path = os.path.join(user_dir, filename)
+                try:
+                    with open(meta_path, 'r', encoding='utf-8') as f:
+                        meta = json.load(f)
+                    
+                    if meta.get('project') == project_name:
+                        meta['project'] = new_name
+                        with open(meta_path, 'w', encoding='utf-8') as f:
+                            json.dump(meta, f, ensure_ascii=False, indent=2)
+                        updated_count += 1
+                except:
+                    pass
+        
+        return jsonify({'success': True, 'message': f'重命名成功，已更新 {updated_count} 个资产'})
+    
+    except Exception as e:
+        print(f"[ERROR] 重命名项目失败: {e}")
+        return jsonify({'success': False, 'message': f'重命名失败: {str(e)}'})
+
+
+@app.route('/api/assets/projects/<project_name>/episodes', methods=['POST'])
+def add_episode(project_name):
+    """添加分集"""
+    try:
+        api_key_hash = get_api_key_hash()
+        if not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+        
+        data = request.get_json()
+        episode_name = data.get('name', '').strip()
+        
+        if not episode_name:
+            return jsonify({'success': False, 'message': '分集名称不能为空'})
+        
+        projects = load_projects(api_key_hash)
+        
+        for project in projects:
+            if project['name'] == project_name:
+                if episode_name in project.get('episodes', []):
+                    return jsonify({'success': False, 'message': '分集已存在'})
+                project.setdefault('episodes', []).append(episode_name)
+                save_projects(api_key_hash, projects)
+                return jsonify({'success': True, 'episodes': project['episodes']})
+        
+        return jsonify({'success': False, 'message': '项目不存在'})
+    
+    except Exception as e:
+        print(f"[ERROR] 添加分集失败: {e}")
+        return jsonify({'success': False, 'message': f'添加失败: {str(e)}'})
+
+
+@app.route('/api/assets/projects/<project_name>/episodes/<episode_name>', methods=['DELETE'])
+def delete_episode(project_name, episode_name):
+    """删除分集"""
+    try:
+        api_key_hash = get_api_key_hash()
+        if not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+        
+        projects = load_projects(api_key_hash)
+        
+        for project in projects:
+            if project['name'] == project_name:
+                episodes = project.get('episodes', [])
+                if episode_name in episodes:
+                    episodes.remove(episode_name)
+                    project['episodes'] = episodes
+                    save_projects(api_key_hash, projects)
+                    
+                    # 清空使用该分集的资产的分集标签
+                    import json
+                    category_dirs = {
+                        'storyboard': Config.ASSETS_STORYBOARD_DIR,
+                        'artwork': Config.ASSETS_ARTWORK_DIR,
+                        'video': Config.ASSETS_VIDEO_DIR
+                    }
+                    
+                    for cat, base_dir in category_dirs.items():
+                        user_dir = os.path.join(base_dir, api_key_hash)
+                        if not os.path.exists(user_dir):
+                            continue
+                        
+                        for filename in os.listdir(user_dir):
+                            if not filename.endswith('.meta.json'):
+                                continue
+                            
+                            meta_path = os.path.join(user_dir, filename)
+                            try:
+                                with open(meta_path, 'r', encoding='utf-8') as f:
+                                    meta = json.load(f)
+                                
+                                if meta.get('project') == project_name and meta.get('episode') == episode_name:
+                                    meta['episode'] = ''
+                                    with open(meta_path, 'w', encoding='utf-8') as f:
+                                        json.dump(meta, f, ensure_ascii=False, indent=2)
+                            except:
+                                pass
+                    
+                    return jsonify({'success': True, 'message': '删除成功', 'episodes': project['episodes']})
+                else:
+                    return jsonify({'success': False, 'message': '分集不存在'})
+        
+        return jsonify({'success': False, 'message': '项目不存在'})
+    
+    except Exception as e:
+        print(f"[ERROR] 删除分集失败: {e}")
+        return jsonify({'success': False, 'message': f'删除失败: {str(e)}'})
+
+
+@app.route('/api/assets/projects/<project_name>/episodes/<episode_name>', methods=['PUT'])
+def rename_episode(project_name, episode_name):
+    """重命名分集"""
+    try:
+        api_key_hash = get_api_key_hash()
+        if not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+        
+        data = request.get_json()
+        new_name = data.get('name', '').strip()
+        
+        if not new_name:
+            return jsonify({'success': False, 'message': '分集名称不能为空'})
+        
+        projects = load_projects(api_key_hash)
+        
+        for project in projects:
+            if project['name'] == project_name:
+                episodes = project.get('episodes', [])
+                
+                if new_name in episodes:
+                    return jsonify({'success': False, 'message': '分集名称已存在'})
+                
+                if episode_name in episodes:
+                    idx = episodes.index(episode_name)
+                    episodes[idx] = new_name
+                    project['episodes'] = episodes
+                    save_projects(api_key_hash, projects)
+                    
+                    # 更新使用该分集的资产的分集标签
+                    import json
+                    category_dirs = {
+                        'storyboard': Config.ASSETS_STORYBOARD_DIR,
+                        'artwork': Config.ASSETS_ARTWORK_DIR,
+                        'video': Config.ASSETS_VIDEO_DIR
+                    }
+                    
+                    updated_count = 0
+                    for cat, base_dir in category_dirs.items():
+                        user_dir = os.path.join(base_dir, api_key_hash)
+                        if not os.path.exists(user_dir):
+                            continue
+                        
+                        for filename in os.listdir(user_dir):
+                            if not filename.endswith('.meta.json'):
+                                continue
+                            
+                            meta_path = os.path.join(user_dir, filename)
+                            try:
+                                with open(meta_path, 'r', encoding='utf-8') as f:
+                                    meta = json.load(f)
+                                
+                                if meta.get('project') == project_name and meta.get('episode') == episode_name:
+                                    meta['episode'] = new_name
+                                    with open(meta_path, 'w', encoding='utf-8') as f:
+                                        json.dump(meta, f, ensure_ascii=False, indent=2)
+                                    updated_count += 1
+                            except:
+                                pass
+                    
+                    return jsonify({'success': True, 'message': f'重命名成功，已更新 {updated_count} 个资产', 'episodes': project['episodes']})
+                else:
+                    return jsonify({'success': False, 'message': '分集不存在'})
+        
+        return jsonify({'success': False, 'message': '项目不存在'})
+    
+    except Exception as e:
+        print(f"[ERROR] 重命名分集失败: {e}")
+        return jsonify({'success': False, 'message': f'重命名失败: {str(e)}'})
+
+
+@app.route('/api/assets/projects/<project_name>/asset-count', methods=['GET'])
+def get_project_asset_count(project_name):
+    """获取项目关联的资产数量"""
+    try:
+        api_key_hash = get_api_key_hash()
+        if not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+        
+        import json
+        category_dirs = {
+            'storyboard': Config.ASSETS_STORYBOARD_DIR,
+            'artwork': Config.ASSETS_ARTWORK_DIR,
+            'video': Config.ASSETS_VIDEO_DIR
+        }
+        
+        count = 0
+        for cat, base_dir in category_dirs.items():
+            user_dir = os.path.join(base_dir, api_key_hash)
+            if not os.path.exists(user_dir):
+                continue
+            
+            for filename in os.listdir(user_dir):
+                if not filename.endswith('.meta.json'):
+                    continue
+                
+                meta_path = os.path.join(user_dir, filename)
+                try:
+                    with open(meta_path, 'r', encoding='utf-8') as f:
+                        meta = json.load(f)
+                    
+                    if meta.get('project') == project_name:
+                        count += 1
+                except:
+                    pass
+        
+        return jsonify({'success': True, 'count': count})
+    
+    except Exception as e:
+        print(f"[ERROR] 获取项目资产数量失败: {e}")
+        return jsonify({'success': False, 'message': f'获取失败: {str(e)}', 'count': 0})
+
+
+@app.route('/api/assets/update-tags', methods=['POST'])
+def update_asset_tags():
+    """更新单个资产的标签"""
+    try:
+        import json
+        api_key_hash = get_api_key_hash()
+        if not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+        
+        data = request.get_json()
+        category = data.get('category')
+        filename = data.get('filename')
+        project = data.get('project', '')
+        episode = data.get('episode', '')
+        
+        if not category or not filename:
+            return jsonify({'success': False, 'message': '缺少参数'})
+        
+        category_dirs = {
+            'storyboard': Config.ASSETS_STORYBOARD_DIR,
+            'artwork': Config.ASSETS_ARTWORK_DIR,
+            'video': Config.ASSETS_VIDEO_DIR
+        }
+        
+        base_dir = category_dirs.get(category)
+        if not base_dir:
+            return jsonify({'success': False, 'message': '无效的资产分类'})
+        
+        user_dir = os.path.join(base_dir, api_key_hash)
+        meta_path = os.path.join(user_dir, filename + '.meta.json')
+        
+        # 读取现有元数据
+        meta_data = {}
+        if os.path.exists(meta_path):
+            with open(meta_path, 'r', encoding='utf-8') as f:
+                meta_data = json.load(f)
+        
+        # 更新标签
+        meta_data['project'] = project
+        meta_data['episode'] = episode
+        meta_data['filename'] = filename
+        meta_data['category'] = category
+        
+        # 保存元数据
+        with open(meta_path, 'w', encoding='utf-8') as f:
+            json.dump(meta_data, f, ensure_ascii=False, indent=2)
+        
+        # 如果项目/分集不存在，自动添加到项目列表
+        if project:
+            projects = load_projects(api_key_hash)
+            project_exists = False
+            for p in projects:
+                if p['name'] == project:
+                    project_exists = True
+                    if episode and episode not in p.get('episodes', []):
+                        p.setdefault('episodes', []).append(episode)
+                    break
+            
+            if not project_exists:
+                new_project = {
+                    'name': project,
+                    'episodes': [episode] if episode else [],
+                    'created_time': time.strftime('%Y-%m-%d %H:%M:%S')
+                }
+                projects.append(new_project)
+            
+            save_projects(api_key_hash, projects)
+        
+        return jsonify({'success': True, 'message': '标签更新成功'})
+    
+    except Exception as e:
+        print(f"[ERROR] 更新资产标签失败: {e}")
+        return jsonify({'success': False, 'message': f'更新失败: {str(e)}'})
+
+
+@app.route('/api/assets/batch-tags', methods=['POST'])
+def batch_update_tags():
+    """批量更新资产标签"""
+    try:
+        import json
+        api_key_hash = get_api_key_hash()
+        if not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+        
+        data = request.get_json()
+        assets = data.get('assets', [])  # [{category, filename}, ...]
+        project = data.get('project', '')
+        episode = data.get('episode', '')
+        
+        if not assets:
+            return jsonify({'success': False, 'message': '请选择要更新的资产'})
+        
+        category_dirs = {
+            'storyboard': Config.ASSETS_STORYBOARD_DIR,
+            'artwork': Config.ASSETS_ARTWORK_DIR,
+            'video': Config.ASSETS_VIDEO_DIR
+        }
+        
+        updated_count = 0
+        for asset in assets:
+            category = asset.get('category')
+            filename = asset.get('filename')
+            
+            if not category or not filename:
+                continue
+            
+            base_dir = category_dirs.get(category)
+            if not base_dir:
+                continue
+            
+            user_dir = os.path.join(base_dir, api_key_hash)
+            meta_path = os.path.join(user_dir, filename + '.meta.json')
+            
+            # 读取现有元数据
+            meta_data = {}
+            if os.path.exists(meta_path):
+                with open(meta_path, 'r', encoding='utf-8') as f:
+                    meta_data = json.load(f)
+            
+            # 更新标签
+            meta_data['project'] = project
+            meta_data['episode'] = episode
+            meta_data['filename'] = filename
+            meta_data['category'] = category
+            
+            # 保存元数据
+            with open(meta_path, 'w', encoding='utf-8') as f:
+                json.dump(meta_data, f, ensure_ascii=False, indent=2)
+            
+            updated_count += 1
+        
+        # 如果项目/分集不存在，自动添加到项目列表
+        if project:
+            projects = load_projects(api_key_hash)
+            project_exists = False
+            for p in projects:
+                if p['name'] == project:
+                    project_exists = True
+                    if episode and episode not in p.get('episodes', []):
+                        p.setdefault('episodes', []).append(episode)
+                    break
+            
+            if not project_exists:
+                new_project = {
+                    'name': project,
+                    'episodes': [episode] if episode else [],
+                    'created_time': time.strftime('%Y-%m-%d %H:%M:%S')
+                }
+                projects.append(new_project)
+            
+            save_projects(api_key_hash, projects)
+        
+        return jsonify({'success': True, 'message': f'成功更新 {updated_count} 个资产的标签'})
+    
+    except Exception as e:
+        print(f"[ERROR] 批量更新标签失败: {e}")
+        return jsonify({'success': False, 'message': f'更新失败: {str(e)}'})
+
+
+@app.route('/api/assets/rename', methods=['POST'])
+def rename_asset():
+    """重命名资产"""
+    try:
+        import json
+        api_key_hash = get_api_key_hash()
+        if not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+        
+        data = request.get_json()
+        category = data.get('category')
+        filename = data.get('filename')
+        new_name = data.get('new_name', '').strip()
+        
+        if not category or not filename:
+            return jsonify({'success': False, 'message': '缺少参数'})
+        
+        if not new_name:
+            return jsonify({'success': False, 'message': '名称不能为空'})
+        
+        category_dirs = {
+            'storyboard': Config.ASSETS_STORYBOARD_DIR,
+            'artwork': Config.ASSETS_ARTWORK_DIR,
+            'video': Config.ASSETS_VIDEO_DIR
+        }
+        
+        base_dir = category_dirs.get(category)
+        if not base_dir:
+            return jsonify({'success': False, 'message': '无效的资产分类'})
+        
+        user_dir = os.path.join(base_dir, api_key_hash)
+        meta_path = os.path.join(user_dir, filename + '.meta.json')
+        
+        # 读取现有元数据
+        meta_data = {}
+        if os.path.exists(meta_path):
+            with open(meta_path, 'r', encoding='utf-8') as f:
+                meta_data = json.load(f)
+        
+        # 更新显示名称
+        meta_data['original_filename'] = new_name
+        meta_data['filename'] = filename
+        meta_data['category'] = category
+        
+        # 保存元数据
+        with open(meta_path, 'w', encoding='utf-8') as f:
+            json.dump(meta_data, f, ensure_ascii=False, indent=2)
+        
+        return jsonify({'success': True, 'message': '重命名成功', 'new_name': new_name})
+    
+    except Exception as e:
+        print(f"[ERROR] 重命名资产失败: {e}")
+        return jsonify({'success': False, 'message': f'重命名失败: {str(e)}'})
+
+
+@app.route('/api/assets/copy-to-upload', methods=['POST'])
+def copy_asset_to_upload():
+    """将资产复制到上传目录，用于各应用模块使用"""
+    try:
+        import shutil
+        api_key_hash = get_api_key_hash()
+        if not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+
+        data = request.get_json()
+        category = data.get('category')  # storyboard, artwork
+        filename = data.get('filename')
+        target_type = data.get('target_type', 'i2v')  # i2v, kf2v, i2i
+
+        if not category or not filename:
+            return jsonify({'success': False, 'message': '缺少参数'})
+
+        # 只支持图片资产
+        if category not in ['storyboard', 'artwork']:
+            return jsonify({'success': False, 'message': '只能从分镜库或原画库选择图片'})
+
+        category_dirs = {
+            'storyboard': Config.ASSETS_STORYBOARD_DIR,
+            'artwork': Config.ASSETS_ARTWORK_DIR
+        }
+
+        target_dirs = {
+            'i2v': Config.UPLOAD_I2V_DIR,
+            'kf2v': Config.UPLOAD_KF2V_DIR,
+            'i2i': Config.UPLOAD_I2I_DIR
+        }
+
+        source_dir = os.path.join(category_dirs[category], api_key_hash)
+        source_path = os.path.join(source_dir, filename)
+
+        if not os.path.exists(source_path):
+            return jsonify({'success': False, 'message': '源文件不存在'})
+
+        target_base_dir = target_dirs.get(target_type, Config.UPLOAD_I2V_DIR)
+        target_dir = os.path.join(target_base_dir, api_key_hash)
+        os.makedirs(target_dir, exist_ok=True)
+
+        # 生成新文件名
+        import uuid
+        ext = filename.rsplit('.', 1)[-1] if '.' in filename else 'png'
+        timestamp = int(time.time())
+        unique_id = str(uuid.uuid4())[:8]
+        new_filename = f"{timestamp}_{unique_id}.{ext}"
+
+        target_path = os.path.join(target_dir, new_filename)
+        shutil.copy2(source_path, target_path)
+
+        # 构建URL
+        url_prefixes = {
+            'i2v': f'/api/image/i2v/{api_key_hash}/{new_filename}',
+            'kf2v': f'/api/image/kf2v/{api_key_hash}/{new_filename}',
+            'i2i': f'/api/image/i2i/{api_key_hash}/{new_filename}'
+        }
+
+        return jsonify({
+            'success': True,
+            'filename': new_filename,
+            'url': url_prefixes.get(target_type, url_prefixes['i2v'])
+        })
+
+    except Exception as e:
+        print(f"[ERROR] 复制资产失败: {e}")
+        return jsonify({'success': False, 'message': f'复制失败: {str(e)}'})
+
+
+@app.route('/api/assets/save-from-output', methods=['POST'])
+def save_to_asset_library():
+    """将输出的图片/视频保存到资产库"""
+    try:
+        import shutil
+        import json
+        import requests
+        api_key_hash = get_api_key_hash()
+        if not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+
+        data = request.get_json()
+        source_type = data.get('source_type')  # i2v, kf2v, t2i, i2i
+        filename = data.get('filename')  # 文件名或URL
+        target_category = data.get('target_category')  # storyboard, artwork, video
+        file_type = data.get('file_type', 'image')  # image 或 video
+
+        if not source_type or not filename or not target_category:
+            return jsonify({'success': False, 'message': '缺少参数'})
+
+        # 验证目标分类与文件类型是否匹配
+        if file_type == 'video' and target_category != 'video':
+            return jsonify({'success': False, 'message': '视频只能保存到视频库'})
+        if file_type == 'image' and target_category == 'video':
+            return jsonify({'success': False, 'message': '图片不能保存到视频库'})
+
+        target_dirs = {
+            'storyboard': Config.ASSETS_STORYBOARD_DIR,
+            'artwork': Config.ASSETS_ARTWORK_DIR,
+            'video': Config.ASSETS_VIDEO_DIR
+        }
+
+        target_base_dir = target_dirs.get(target_category)
+        if not target_base_dir:
+            return jsonify({'success': False, 'message': '无效的目标分类'})
+
+        target_dir = os.path.join(target_base_dir, api_key_hash)
+        os.makedirs(target_dir, exist_ok=True)
+
+        # 检查是否是URL（文生图的远程URL）
+        is_remote_url = filename.startswith('http://') or filename.startswith('https://')
+        
+        # 检查是否是本地API URL，需要提取真正的文件名
+        # 格式如: /api/t2i-image/abc123/filename.png 或 /api/i2i-image/abc123/filename.png
+        is_local_api_url = filename.startswith('/api/')
+        if is_local_api_url:
+            # 从URL中提取文件名
+            filename = filename.split('/')[-1]
+        
+        # 生成新文件名
+        import uuid
+        timestamp = int(time.time())
+        unique_id = str(uuid.uuid4())[:8]
+        
+        if is_remote_url:
+            # 从远程URL下载文件
+            try:
+                response = requests.get(filename, timeout=30)
+                response.raise_for_status()
+                
+                # 从Content-Type推断扩展名
+                content_type = response.headers.get('Content-Type', '')
+                if 'png' in content_type:
+                    ext = 'png'
+                elif 'gif' in content_type:
+                    ext = 'gif'
+                elif 'webp' in content_type:
+                    ext = 'webp'
+                elif 'jpeg' in content_type or 'jpg' in content_type:
+                    ext = 'jpg'
+                else:
+                    ext = 'png'  # 默认使用png
+                
+                new_filename = f"{timestamp}_{unique_id}.{ext}"
+                target_path = os.path.join(target_dir, new_filename)
+                
+                with open(target_path, 'wb') as f:
+                    f.write(response.content)
+                    
+            except Exception as e:
+                print(f"[ERROR] 下载远程图片失败: {e}")
+                return jsonify({'success': False, 'message': f'下载图片失败: {str(e)}'})
+        else:
+            # 本地文件复制
+            source_dirs = {
+                'i2v': Config.OUTPUT_I2V_DIR,
+                'kf2v': Config.OUTPUT_KF2V_DIR,
+                't2i': Config.OUTPUT_T2I_DIR,
+                'i2i': Config.OUTPUT_I2I_DIR,
+                't2v': Config.OUTPUT_T2V_DIR,
+                'r2v': Config.OUTPUT_R2V_DIR
+            }
+            
+            source_base_dir = source_dirs.get(source_type)
+            if not source_base_dir:
+                return jsonify({'success': False, 'message': '无效的源类型'})
+
+            source_path = os.path.join(source_base_dir, api_key_hash, filename)
+            if not os.path.exists(source_path):
+                return jsonify({'success': False, 'message': '源文件不存在'})
+
+            ext = filename.rsplit('.', 1)[-1] if '.' in filename else ('mp4' if file_type == 'video' else 'png')
+            new_filename = f"{timestamp}_{unique_id}.{ext}"
+            target_path = os.path.join(target_dir, new_filename)
+            shutil.copy2(source_path, target_path)
+
+        # 保存元数据
+        meta_filename = new_filename + '.meta.json'
+        meta_path = os.path.join(target_dir, meta_filename)
+        meta_data = {
+            'original_filename': filename if not is_remote_url else filename.split('/')[-1],
+            'filename': new_filename,
+            'category': target_category,
+            'upload_time': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'file_type': file_type,
+            'source_type': source_type,
+            'is_remote': is_remote_url
+        }
+        with open(meta_path, 'w', encoding='utf-8') as f:
+            json.dump(meta_data, f, ensure_ascii=False, indent=2)
+
+        return jsonify({
+            'success': True,
+            'filename': new_filename,
+            'category': target_category,
+            'url': f'/api/assets/{target_category}/{api_key_hash}/{new_filename}'
+        })
+
+    except Exception as e:
+        print(f"[ERROR] 保存到资产库失败: {e}")
+        return jsonify({'success': False, 'message': f'保存失败: {str(e)}'})
+
+# ========== 文生视频路由 ==========
+
+@app.route('/text2video')
+def text2video_page():
+    """文生视频页面"""
+    if 'api_key_hash' not in session:
+        return render_template('index.html')
+    return render_template('text2video.html')
+
+
+@app.route('/api/create-t2v-task', methods=['POST'])
+def create_t2v_task():
+    """创建文生视频任务"""
+    try:
+        api_key = get_api_key()
+        api_key_hash = get_api_key_hash()
+
+        if not api_key or not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+
+        data = request.get_json()
+
+        # 验证提示词
+        prompt = data.get('prompt', '').strip()
+        if not prompt:
+            return jsonify({'success': False, 'message': '请输入提示词'})
+
+        # 创建服务
+        video_service = VideoService(api_key)
+        cache_service = CacheService(api_key_hash)
+
+        # 获取批量数量
+        batch_count = int(data.get('batch_count', 1))
+        batch_count = max(1, min(4, batch_count))  # 限制在1-4之间
+
+        # 生成批次ID
+        import uuid
+        batch_id = str(uuid.uuid4()) if batch_count > 1 else None
+
+        created_tasks = []
+
+        # 批量创建任务
+        for i in range(batch_count):
+            task_info = video_service.create_t2v_task(
+                prompt=prompt,
+                model=data.get('model', 'wan2.6-t2v'),
+                resolution=data.get('resolution', '720P'),
+                duration=int(data.get('duration', 5)),
+                audio=data.get('audio', False),
+                audio_url=data.get('audio_url', ''),
+                negative_prompt=data.get('negative_prompt', ''),
+                shot_type=data.get('shot_type', 'single')
+            )
+
+            if task_info:
+                # 添加批次信息
+                task_info['batch_id'] = batch_id
+                task_info['batch_index'] = i + 1
+                task_info['batch_total'] = batch_count
+
+                # 保存任务信息
+                cache_service.add_t2v_task(task_info)
+                created_tasks.append(task_info)
+
+                print(f"[INFO] 创建文生视频任务 {i + 1}/{batch_count}: {task_info['task_id']}")
+
+        if created_tasks:
+            message = f'成功创建{batch_count}个任务' if batch_count > 1 else '任务创建成功'
+            return jsonify({
+                'success': True,
+                'tasks': created_tasks,
+                'batch_id': batch_id,
+                'message': message
+            })
+        else:
+            return jsonify({'success': False, 'message': '创建任务失败'})
+
+    except Exception as e:
+        print(f"[ERROR] 创建文生视频任务失败: {e}")
+        return jsonify({'success': False, 'message': f'创建任务失败: {str(e)}'})
+
+
+@app.route('/api/t2v-tasks', methods=['GET'])
+def get_t2v_tasks():
+    """获取文生视频任务列表 - 支持分页（高性能版本）"""
+    try:
+        api_key_hash = get_api_key_hash()
+        if not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+
+        # 分页参数
+        page = request.args.get('page', 1, type=int)
+        limit = request.args.get('limit', 10, type=int)
+        limit = min(limit, 50)
+
+        cache_service = CacheService(api_key_hash)
+
+        # 使用高性能分页方法
+        tasks, total, has_more = cache_service.get_t2v_tasks_paginated(page, limit)
+
+        # 为每个任务添加视频URL
+        for task in tasks:
+            if task.get('task_status') == 'SUCCEEDED':
+                task['local_video_path'] = f"/api/video/t2v/{api_key_hash}/{task['task_id']}.mp4"
+
+        return jsonify({
+            'success': True,
+            'tasks': tasks,
+            'page': page,
+            'limit': limit,
+            'total': total,
+            'has_more': has_more
+        })
+
+    except Exception as e:
+        print(f"[ERROR] 获取文生视频任务列表失败: {e}")
+        return jsonify({'success': False, 'message': f'获取任务列表失败: {str(e)}'})
+
+
+@app.route('/api/t2v-task/<task_id>', methods=['GET'])
+def get_t2v_task_status(task_id):
+    """获取文生视频任务状态"""
+    try:
+        api_key = get_api_key()
+        api_key_hash = get_api_key_hash()
+
+        if not api_key or not api_key_hash:
+            return jsonify({'success': False, 'message': '请先输入API Key'})
+
+        video_service = VideoService(api_key)
+        cache_service = CacheService(api_key_hash)
+
+        # 查询任务状态
+        result = video_service.get_task_status(task_id)
+
+        if result:
+            # 更新缓存
+            cache_service.update_t2v_task(task_id, result)
+
+            # 如果任务完成，下载视频
+            if result.get('task_status') == 'SUCCEEDED' and result.get('video_url'):
+                video_path = cache_service.download_t2v_video(task_id, result['video_url'])
+                if video_path:
+                    result['local_video_path'] = f'/api/video/t2v/{api_key_hash}/{task_id}.mp4'
+
+            return jsonify({'success': True, 'task': result})
+        else:
+            return jsonify({'success': False, 'message': '查询任务失败'})
+
+    except Exception as e:
+        print(f"[ERROR] 查询文生视频任务失败: {e}")
+        return jsonify({'success': False, 'message': f'查询任务失败: {str(e)}'})
+
+
+@app.route('/api/video/t2v/<api_key_hash>/<filename>')
+def get_t2v_video(api_key_hash, filename):
+    """获取文生视频文件"""
+    try:
+        filepath = os.path.join(Config.OUTPUT_T2V_DIR, api_key_hash, filename)
+        if os.path.exists(filepath):
+            return serve_video_with_range(filepath, 'video/mp4')
+        return jsonify({'error': '文件不存在'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8000, debug=True)

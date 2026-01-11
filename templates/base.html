@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}通义万相 - 图生视频{% endblock %}</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --primary-color: #1664ff;
+            --primary-hover: #0e4fc3;
+            --primary-active: #0d3fa0;
+            --text-primary: #1f2329;
+            --text-secondary: #646a73;
+            --text-tertiary: #8f959e;
+            --border-color: #dee0e3;
+            --border-light: #e8eaed;
+            --bg-primary: #ffffff;
+            --bg-secondary: #f7f8fa;
+            --bg-tertiary: #f0f2f5;
+            --shadow-sm: 0 1px 4px rgba(0, 0, 0, 0.08);
+            --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.08);
+            --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.12);
+            --radius-sm: 4px;
+            --radius-md: 8px;
+            --radius-lg: 12px;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+            background: var(--bg-tertiary);
+            min-height: 100vh;
+            color: var(--text-primary);
+            line-height: 1.5;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .card {
+            background: var(--bg-primary);
+            border-radius: var(--radius-md);
+            box-shadow: var(--shadow-md);
+            overflow: hidden;
+            border: 1px solid var(--border-light);
+        }
+
+        .header {
+            background: var(--bg-primary);
+            border-bottom: 1px solid var(--border-light);
+            padding: 20px 24px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 4px;
+            color: var(--text-primary);
+        }
+
+        .header p {
+            font-size: 14px;
+            color: var(--text-secondary);
+            line-height: 22px;
+        }
+
+        .content {
+            padding: 24px;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 7px 15px;
+            border: 1px solid transparent;
+            border-radius: var(--radius-sm);
+            font-size: 14px;
+            line-height: 22px;
+            font-weight: 400;
+            cursor: pointer;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            user-select: none;
+            white-space: nowrap;
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .btn-primary {
+            background: var(--primary-color);
+            color: white;
+            border-color: var(--primary-color);
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            background: var(--primary-hover);
+            border-color: var(--primary-hover);
+            box-shadow: 0 2px 4px rgba(22, 100, 255, 0.2);
+        }
+
+        .btn-primary:active:not(:disabled) {
+            background: var(--primary-active);
+            border-color: var(--primary-active);
+            transform: translateY(1px);
+        }
+
+        .btn-secondary {
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            border-color: var(--border-color);
+        }
+
+        .btn-secondary:hover:not(:disabled) {
+            background: var(--bg-secondary);
+            border-color: #c9cdd4;
+        }
+
+        .btn-secondary:active:not(:disabled) {
+            background: var(--bg-tertiary);
+            transform: translateY(1px);
+        }
+
+        .btn-secondary.active {
+            background: var(--primary-color);
+            color: white;
+            border-color: var(--primary-color);
+            font-weight: 500;
+        }
+
+        .btn-secondary.active:hover:not(:disabled) {
+            background: var(--primary-hover);
+            border-color: var(--primary-hover);
+        }
+
+        .alert {
+            padding: 12px 16px;
+            border-radius: var(--radius-sm);
+            margin-bottom: 16px;
+            font-size: 14px;
+            line-height: 22px;
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+        }
+
+        .alert::before {
+            content: '';
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            flex-shrink: 0;
+            margin-top: 3px;
+        }
+
+        .alert-error {
+            background: #fff1f0;
+            color: #d32029;
+            border: 1px solid #ffccc7;
+        }
+
+        .alert-error::before {
+            background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='%23d32029'%3E%3Cpath d='M8 0a8 8 0 100 16A8 8 0 008 0zm1 12H7v-2h2v2zm0-3H7V4h2v5z'/%3E%3C/svg%3E") no-repeat center;
+        }
+
+        .alert-success {
+            background: #f0f9ff;
+            color: #0e5e6f;
+            border: 1px solid #b3e0ff;
+        }
+
+        .alert-success::before {
+            background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='%230e5e6f'%3E%3Cpath d='M8 0a8 8 0 100 16A8 8 0 008 0zm3.97 6.03l-4.5 4.5a.75.75 0 01-1.06 0l-2-2a.75.75 0 111.06-1.06l1.47 1.47 3.97-3.97a.75.75 0 111.06 1.06z'/%3E%3C/svg%3E") no-repeat center;
+        }
+
+        .alert-info {
+            background: var(--bg-secondary);
+            color: var(--text-secondary);
+            border: 1px solid var(--border-color);
+        }
+
+        .alert-info::before {
+            background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='%23646a73'%3E%3Cpath d='M8 0a8 8 0 100 16A8 8 0 008 0zm1 12H7V7h2v5zm0-6H7V4h2v2z'/%3E%3C/svg%3E") no-repeat center;
+        }
+
+        /* 滚动条样式 */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #c9cdd4;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #8f959e;
+        }
+    </style>
+    <link rel="stylesheet" href="/static/common.css">
+    {% block extra_css %}{% endblock %}
+</head>
+<body>
+    {% block body %}{% endblock %}
+    
+    <script>
+        // 通用工具函数
+        function showAlert(message, type = 'info') {
+            const alertDiv = document.createElement('div');
+            alertDiv.className = `alert alert-${type}`;
+            alertDiv.textContent = message;
+            
+            const content = document.querySelector('.content');
+            if (content) {
+                content.insertBefore(alertDiv, content.firstChild);
+                setTimeout(() => alertDiv.remove(), 5000);
+            }
+        }
+
+        function formatDate(dateString) {
+            if (!dateString) return '-';
+            const date = new Date(dateString);
+            return date.toLocaleString('zh-CN');
+        }
+
+        function formatDuration(seconds) {
+            return `${seconds}秒`;
+        }
+    </script>
+    <script src="/static/common.js"></script>
+    {% block extra_js %}{% endblock %}
+</body>
+</html>

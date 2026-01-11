@@ -1,0 +1,15 @@
+{
+  "effects": [
+    {
+      "template": "hanfu-1",
+      "name": "唐韵翩然",
+      "description": "汉服特效，适合古风人物",
+      "category": "人物特效",
+      "supported_models": ["wanx2.1-kf2v-plus"],
+      "supported_resolutions": ["720P"],
+      "default_resolution": "720P"
+    }
+  ],
+  "version": "1.0",
+  "last_updated": "2025-12-05"
+}
